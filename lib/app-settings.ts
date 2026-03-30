@@ -14,6 +14,7 @@ export type AppSettings = {
   emailNotifications: boolean
   leaveAlerts: boolean
   feedbackReminders: boolean
+  feedbackCollectionEnabled: boolean
   aiInsights: boolean
   autoOptimization: boolean
   conflictDetection: boolean
@@ -35,6 +36,7 @@ export const defaultAppSettings: AppSettings = {
   emailNotifications: true,
   leaveAlerts: true,
   feedbackReminders: true,
+  feedbackCollectionEnabled: true,
   aiInsights: true,
   autoOptimization: true,
   conflictDetection: true,

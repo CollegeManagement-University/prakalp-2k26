@@ -29,15 +29,21 @@ export function AuthCard({ mode }: AuthCardProps) {
   const [password, setPassword] = useState('')
   const [fullName, setFullName] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [message, setMessage] = useState<string | null>(searchParams.get('error'))
+  const [message, setMessage] = useState<string | null>(searchParams.get('error') ?? searchParams.get('message'))
   const [isError, setIsError] = useState(Boolean(searchParams.get('error')))
 
-  const nextPath = searchParams.get('next') ?? '/'
+  const requestedNextPath = searchParams.get('next')
+  const nextPath = requestedNextPath && requestedNextPath.startsWith('/') ? requestedNextPath : '/'
   const isSignup = mode === 'signup'
   const envReady = useMemo(() => hasSupabaseEnv(), [])
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+
+    if (isSignup) {
+      router.push('/student-dashboard')
+      return
+    }
 
     if (!envReady) {
       setIsError(true)
@@ -52,38 +58,23 @@ export function AuthCard({ mode }: AuthCardProps) {
     try {
       const supabase = createClient()
 
-      if (isSignup) {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              full_name: fullName,
-            },
-            emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`,
-          },
-        })
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
 
-        if (error) {
-          throw error
-        }
-
-        setMessage('Account created. Check your inbox and confirm your email.')
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        })
-
-        if (error) {
-          throw error
-        }
-
-        router.replace(nextPath)
-        router.refresh()
+      if (error) {
+        throw error
       }
+
+      // Use a hard navigation after auth to avoid client fetch race/errors during route transition.
+      window.location.assign(nextPath)
+      return
     } catch (error) {
-      const text = error instanceof Error ? error.message : 'Authentication failed.'
+      const text =
+        error instanceof Error
+          ? error.message
+          : 'Authentication failed. Verify Supabase auth settings and DB trigger setup.'
       setIsError(true)
       setMessage(text)
     } finally {
@@ -139,16 +130,22 @@ export function AuthCard({ mode }: AuthCardProps) {
                 ? 'Creating account...'
                 : 'Signing in...'
               : isSignup
-                ? 'Create account'
+                ? 'Continue as Student'
                 : 'Sign in'}
           </Button>
         </form>
 
         <p className="mt-4 text-sm text-muted-foreground">
-          {isSignup ? 'Already have an account?' : "Don't have an account?"}{' '}
-          <Link className="text-primary underline" href={isSignup ? '/login' : '/signup'}>
-            {isSignup ? 'Sign in' : 'Create one'}
-          </Link>
+          {isSignup ? 'Already have an account?' : 'Are you a student?'}{' '}
+          {isSignup ? (
+            <Link className="text-primary underline" href="/login">
+              Sign in
+            </Link>
+          ) : (
+            <Link className="text-primary underline" href="/student-register">
+              Register (Students only)
+            </Link>
+          )}
         </p>
       </CardContent>
     </Card>

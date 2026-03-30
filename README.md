@@ -74,6 +74,60 @@ If syllabus is missing for that combination, timetable generation is blocked and
 pnpm build
 ```
 
+## Deploy To Vercel
+
+### Option 1: Deploy from GitHub (recommended)
+
+1. Push your latest code to GitHub.
+2. Open Vercel dashboard and click New Project.
+3. Import this repository.
+4. Keep framework preset as Next.js.
+5. Add environment variables in Vercel Project Settings:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+6. Deploy.
+
+### Option 2: Deploy with Vercel CLI
+
+1. Install Vercel CLI:
+
+```bash
+pnpm add -g vercel
+```
+
+2. Login:
+
+```bash
+vercel login
+```
+
+3. Deploy preview:
+
+```bash
+vercel
+```
+
+4. Deploy production:
+
+```bash
+vercel --prod
+```
+
+### Included Vercel config
+
+This repository includes [vercel.json](vercel.json) with pnpm install/build commands aligned to this project.
+
+### Post-deployment checks
+
+1. Verify login/signup works.
+2. Verify faculty role gets redirected away from admin pages.
+3. Verify timetable generation requires syllabus upload for selected semester/section/department.
+4. Verify Supabase callback URL includes your deployed domain:
+
+- `https://your-domain.vercel.app/auth/callback`
+
 ## Notes
 
 - This project currently stores syllabus upload metadata in local storage for generation gating.

@@ -40,9 +40,20 @@ Run:
 pnpm dev
 ```
 
-Use `/signup` and `/login` for auth flow.
+Use `/login` for faculty/admin access. The dedicated student registration path is `/student-register`.
+The `/signup` route is kept as a compatibility alias and redirects to `/student-register`.
+
+Students register with name, email, and password at `/student-register`. After signing in at `/login`, role-based routing sends students to `/student-dashboard`, faculty to `/timetable`, and admins to `/`.
 
 After login, the dashboard home page shows "Supabase Connection" status and reads from `profiles`, `departments`, and `courses` to verify schema linkage.
+
+## If student signup returns 500
+
+1. Re-run `supabase/schema.sql` in Supabase SQL Editor to refresh `public.handle_new_user` trigger function.
+2. Ensure the re-run completes without errors so `supabase_auth_admin` grants/policies on `public.profiles` are applied.
+3. In Supabase Authentication > URL Configuration, ensure callback URL is allowed:
+   - `http://localhost:3000/auth/callback`
+4. Retry signup from the student dashboard flow.
 
 ## Demo users (created by schema.sql)
 

@@ -3,7 +3,13 @@ create extension if not exists pgcrypto;
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'user_role') then
-    create type public.user_role as enum ('faculty', 'admin');
+    create type public.user_role as enum ('student', 'faculty', 'admin');
+  else
+    begin
+      alter type public.user_role add value if not exists 'student';
+    exception
+      when duplicate_object then null;
+    end;
   end if;
 
   if not exists (select 1 from pg_type where typname = 'leave_status') then
@@ -21,7 +27,7 @@ create table if not exists public.departments (
 create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   full_name text,
-  role public.user_role not null default 'faculty',
+  role public.user_role not null default 'student',
   department_id uuid references public.departments (id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -40,10 +46,14 @@ create table if not exists public.course_allocations (
   faculty_id uuid not null references public.profiles (id) on delete cascade,
   course_id uuid not null references public.courses (id) on delete cascade,
   semester int not null check (semester between 1 and 8),
+  section text not null default 'A',
   year int not null check (year >= 2000),
   assigned_at timestamptz not null default now(),
   unique (faculty_id, course_id, semester, year)
 );
+
+alter table public.course_allocations
+  add column if not exists section text not null default 'A';
 
 create table if not exists public.timetable_slots (
   id uuid primary key default gen_random_uuid(),
@@ -68,6 +78,18 @@ create table if not exists public.leave_requests (
   check (start_date <= end_date)
 );
 
+create table if not exists public.feedback_submissions (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references public.profiles (id) on delete cascade,
+  faculty_id uuid not null references public.profiles (id) on delete cascade,
+  department_id uuid not null references public.departments (id) on delete cascade,
+  semester int not null check (semester between 1 and 8),
+  section text not null,
+  rating int not null check (rating between 1 and 5),
+  comment text not null,
+  created_at timestamptz not null default now()
+);
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -75,9 +97,19 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, full_name)
-  values (new.id, new.raw_user_meta_data ->> 'full_name')
-  on conflict (id) do nothing;
+  begin
+    insert into public.profiles (id, full_name, role)
+    values (
+      new.id,
+      coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1)),
+      'student'
+    )
+    on conflict (id) do update
+    set full_name = coalesce(excluded.full_name, public.profiles.full_name);
+  exception
+    when others then
+      raise warning 'handle_new_user failed for user %: %', new.id, sqlerrm;
+  end;
 
   return new;
 end;
@@ -110,10 +142,25 @@ as $$
   );
 $$;
 
+create or replace function public.is_staff(user_id uuid)
+returns boolean
+language sql
+stable
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = user_id and p.role in ('admin', 'faculty')
+  );
+$$;
+
 drop trigger if exists set_profiles_updated_at on public.profiles;
 create trigger set_profiles_updated_at
   before update on public.profiles
   for each row execute procedure public.set_updated_at();
+
+grant usage on schema public to supabase_auth_admin;
+grant select, insert, update on public.profiles to supabase_auth_admin;
 
 alter table public.profiles enable row level security;
 alter table public.departments enable row level security;
@@ -121,6 +168,7 @@ alter table public.courses enable row level security;
 alter table public.course_allocations enable row level security;
 alter table public.timetable_slots enable row level security;
 alter table public.leave_requests enable row level security;
+alter table public.feedback_submissions enable row level security;
 
 drop policy if exists "Users can view own profile" on public.profiles;
 create policy "Users can view own profile"
@@ -147,6 +195,21 @@ create policy "Admins can manage profiles"
   for all
   using (public.is_admin(auth.uid()))
   with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Auth admin can insert profiles" on public.profiles;
+create policy "Auth admin can insert profiles"
+  on public.profiles
+  for insert
+  to supabase_auth_admin
+  with check (true);
+
+drop policy if exists "Auth admin can update profiles" on public.profiles;
+create policy "Auth admin can update profiles"
+  on public.profiles
+  for update
+  to supabase_auth_admin
+  using (true)
+  with check (true);
 
 drop policy if exists "Authenticated can view departments" on public.departments;
 create policy "Authenticated can view departments"
@@ -225,6 +288,24 @@ create policy "Admins can review leaves"
   for update
   using (public.is_admin(auth.uid()))
   with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Students can insert own feedback" on public.feedback_submissions;
+create policy "Students can insert own feedback"
+  on public.feedback_submissions
+  for insert
+  with check (student_id = auth.uid());
+
+drop policy if exists "Students can view own feedback" on public.feedback_submissions;
+create policy "Students can view own feedback"
+  on public.feedback_submissions
+  for select
+  using (student_id = auth.uid());
+
+drop policy if exists "Staff can view feedback" on public.feedback_submissions;
+create policy "Staff can view feedback"
+  on public.feedback_submissions
+  for select
+  using (public.is_staff(auth.uid()));
 
 -- Demo seed data (safe to re-run)
 insert into public.departments (name, code)

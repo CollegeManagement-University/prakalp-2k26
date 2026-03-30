@@ -124,8 +124,12 @@ function generateTimetable(
   department: string,
   section: string,
   semester: string,
+  subjectPool?: string[],
 ): TimetableGrid {
-  const subjects = subjectsByDepartment[department] ?? subjectsByDepartment.cs
+  const subjects =
+    subjectPool && subjectPool.length > 0
+      ? subjectPool
+      : subjectsByDepartment[department] ?? subjectsByDepartment.cs
   const facultyList = facultyByDepartment[department] ?? facultyByDepartment.cs
 
   const table: TimetableGrid = {}
@@ -376,8 +380,13 @@ export default function TimetablePage() {
       return
     }
 
+    const subjectsFromSyllabus =
+      matchedSyllabus.generatedSubjects?.length > 0
+        ? matchedSyllabus.generatedSubjects
+        : matchedSyllabus.keywords
+
     setPeriodRows(rows)
-    setTimetable(generateTimetable(rows, department, section, semester))
+    setTimetable(generateTimetable(rows, department, section, semester, subjectsFromSyllabus))
     setShowTimetable(true)
     toast.success(`Timetable generated using syllabus: ${matchedSyllabus.fileName}`)
   }

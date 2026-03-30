@@ -96,6 +96,71 @@ const departmentLabel: Record<DepartmentCode, string> = {
   eng: "Engineering",
 }
 
+const ignoredTokens = new Set([
+  "year",
+  "years",
+  "syllabus",
+  "semester",
+  "sem",
+  "section",
+  "sec",
+  "subject",
+  "subjects",
+  "course",
+  "courses",
+  "final",
+  "draft",
+  "updated",
+  "new",
+  "version",
+  "v1",
+  "v2",
+  "v3",
+])
+
+const semesterSubjectModel: Record<DepartmentCode, Record<string, string[]>> = {
+  cs: {
+    "1": ["Programming Fundamentals", "Discrete Mathematics", "Digital Logic"],
+    "2": ["Data Structures", "Object Oriented Programming", "Computer Organization"],
+    "3": ["Algorithms", "Database Systems", "Operating Systems"],
+    "4": ["Computer Networks", "Software Engineering", "Web Technologies"],
+    "5": ["Machine Learning", "Compiler Design", "Cloud Computing"],
+    "6": ["Deep Learning", "Distributed Systems", "Big Data Analytics"],
+    "7": ["Information Security", "DevOps", "Natural Language Processing"],
+    "8": ["Capstone Project", "Research Methodology", "Professional Ethics"],
+  },
+  math: {
+    "1": ["Calculus I", "Linear Algebra", "Mathematical Reasoning"],
+    "2": ["Calculus II", "Differential Equations", "Probability Basics"],
+    "3": ["Abstract Algebra", "Real Analysis", "Statistical Methods"],
+    "4": ["Numerical Methods", "Complex Analysis", "Optimization"],
+    "5": ["Graph Theory", "Operations Research", "Regression Analysis"],
+    "6": ["Stochastic Processes", "Cryptography", "Time Series"],
+    "7": ["Advanced Statistics", "Mathematical Modeling", "Data Science Math"],
+    "8": ["Dissertation", "Applied Mathematics Seminar", "Research Methods"],
+  },
+  physics: {
+    "1": ["Mechanics", "Waves and Oscillations", "Mathematical Physics"],
+    "2": ["Electromagnetism", "Thermodynamics", "Optics"],
+    "3": ["Quantum Mechanics", "Solid State Physics", "Electronics"],
+    "4": ["Nuclear Physics", "Statistical Mechanics", "Computational Physics"],
+    "5": ["Particle Physics", "Laser Physics", "Advanced Quantum Theory"],
+    "6": ["Astrophysics", "Condensed Matter", "Plasma Physics"],
+    "7": ["Relativity", "Nano Physics", "Experimental Methods"],
+    "8": ["Project Work", "Research Topics", "Scientific Communication"],
+  },
+  eng: {
+    "1": ["Engineering Graphics", "Engineering Mechanics", "Basic Electrical"],
+    "2": ["Materials Science", "Manufacturing Processes", "Thermal Science"],
+    "3": ["Fluid Mechanics", "Machine Design", "Control Systems"],
+    "4": ["CAD/CAM", "Industrial Engineering", "Heat Transfer"],
+    "5": ["Robotics", "Automation", "Quality Engineering"],
+    "6": ["Advanced Manufacturing", "Embedded Systems", "Project Management"],
+    "7": ["Product Design", "Sustainable Engineering", "Industry 4.0"],
+    "8": ["Capstone Design", "Internship", "Professional Practice"],
+  },
+}
+
 function extractKeywords(fileName: string, department: DepartmentCode) {
   const seedByDepartment: Record<DepartmentCode, string[]> = {
     cs: ["Data Structures", "Algorithms", "Database", "Machine Learning", "Python"],
@@ -107,10 +172,47 @@ function extractKeywords(fileName: string, department: DepartmentCode) {
   const tokens = fileName
     .replace(/\.[^.]+$/, "")
     .split(/[_\-\s]+/)
-    .filter(Boolean)
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => {
+      if (!part) return false
+      if (ignoredTokens.has(part)) return false
+      if (/\d/.test(part)) return false
+      if (part.length < 4) return false
+      return /^[a-z]+$/.test(part)
+    })
+    .map((part) => part[0].toUpperCase() + part.slice(1))
 
   const normalized = Array.from(new Set([...tokens, ...seedByDepartment[department]])).slice(0, 7)
   return normalized
+}
+
+function sanitizeSubjects(items: string[]) {
+  return items.filter((item) => {
+    const normalized = item.trim().toLowerCase()
+    if (!normalized) return false
+    if (ignoredTokens.has(normalized)) return false
+    if (/^\d+$/.test(normalized)) return false
+    if (/^[a-z]\d+$/i.test(normalized)) return false
+    return true
+  })
+}
+
+function generateSemesterSubjects(
+  fileName: string,
+  department: DepartmentCode,
+  semester: string,
+) {
+  const catalog = semesterSubjectModel[department][semester] ?? semesterSubjectModel[department]["1"]
+  const filenameHints = fileName
+    .replace(/\.[^.]+$/, "")
+    .split(/[_\-]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 3)
+    .map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase())
+
+  const cleanHints = sanitizeSubjects(filenameHints)
+
+  return sanitizeSubjects(Array.from(new Set([...catalog, ...cleanHints]))).slice(0, 7)
 }
 
 export default function SyllabusPage() {
@@ -123,6 +225,7 @@ export default function SyllabusPage() {
   const [records, setRecords] = useState<SyllabusRecord[]>([])
   const [uploadedFile, setUploadedFile] = useState<string | null>(null)
   const [keywords, setKeywords] = useState<string[]>([])
+  const [generatedSubjects, setGeneratedSubjects] = useState<string[]>([])
 
   useEffect(() => {
     setRecords(loadSyllabusRecords())
@@ -149,7 +252,8 @@ export default function SyllabusPage() {
       return
     }
 
-    const extracted = extractKeywords(file.name, department)
+    const extracted = sanitizeSubjects(extractKeywords(file.name, department))
+    const generated = sanitizeSubjects(generateSemesterSubjects(file.name, department, semester))
     const newRecord: SyllabusRecord = {
       id: crypto.randomUUID(),
       semester,
@@ -158,12 +262,14 @@ export default function SyllabusPage() {
       fileName: file.name,
       uploadedAt: new Date().toISOString(),
       keywords: extracted,
+      generatedSubjects: generated,
     }
 
     const next = upsertSyllabusRecord(newRecord)
     setRecords(next)
     setUploadedFile(file.name)
     setKeywords(extracted)
+    setGeneratedSubjects(generated)
     toast.success(`Syllabus uploaded for Semester ${semester} Section ${section}`)
 
     event.currentTarget.value = ""
@@ -172,10 +278,12 @@ export default function SyllabusPage() {
   useEffect(() => {
     if (activeRecord) {
       setUploadedFile(activeRecord.fileName)
-      setKeywords(activeRecord.keywords)
+      setKeywords(sanitizeSubjects(activeRecord.keywords))
+      setGeneratedSubjects(sanitizeSubjects(activeRecord.generatedSubjects ?? activeRecord.keywords))
     } else {
       setUploadedFile(null)
       setKeywords([])
+      setGeneratedSubjects([])
     }
   }, [activeRecord])
 
@@ -278,22 +386,42 @@ export default function SyllabusPage() {
         <Card className="p-6">
           <div className="mb-4 flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-accent" />
-            <h3 className="text-lg font-semibold">Extracted Keywords</h3>
+            <h3 className="text-lg font-semibold">Analyzer Output</h3>
           </div>
 
-          {keywords.length > 0 ? (
-            <div className="space-y-2">
-              {keywords.map((keyword, index) => (
-                <div key={keyword} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-                  <span className="text-sm">{keyword}</span>
-                  <span className="text-xs text-muted-foreground">{95 - index * 5}%</span>
+          {generatedSubjects.length > 0 ? (
+            <div className="space-y-3">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Generated Subjects for Semester {semester}
+                </p>
+                <div className="space-y-2">
+                  {generatedSubjects.map((subject, index) => (
+                    <div key={subject} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                      <span className="text-sm">{subject}</span>
+                      <span className="text-xs text-muted-foreground">{96 - index * 4}%</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Supporting Keywords
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {keywords.map((keyword) => (
+                    <span key={keyword} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                      {keyword}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
           ) : (
             <div className="flex h-64 flex-col items-center justify-center text-center">
               <FileText className="mb-3 h-12 w-12 text-muted" />
-              <p className="text-sm text-muted-foreground">Upload a syllabus to extract keywords</p>
+              <p className="text-sm text-muted-foreground">Upload a syllabus to generate semester subjects</p>
             </div>
           )}
         </Card>

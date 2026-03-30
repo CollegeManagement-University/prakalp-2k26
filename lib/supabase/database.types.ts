@@ -67,7 +67,7 @@ export type Database = {
           department_id: string | null
           full_name: string | null
           id: string
-          role: 'faculty' | 'admin'
+          role: 'student' | 'faculty' | 'admin'
           updated_at: string
         }
         Insert: {
@@ -75,7 +75,7 @@ export type Database = {
           department_id?: string | null
           full_name?: string | null
           id: string
-          role?: 'faculty' | 'admin'
+          role?: 'student' | 'faculty' | 'admin'
           updated_at?: string
         }
         Update: {
@@ -83,7 +83,7 @@ export type Database = {
           department_id?: string | null
           full_name?: string | null
           id?: string
-          role?: 'faculty' | 'admin'
+          role?: 'student' | 'faculty' | 'admin'
           updated_at?: string
         }
         Relationships: [
@@ -102,6 +102,7 @@ export type Database = {
           faculty_id: string
           id: string
           semester: number
+          section: string
           year: number
         }
         Insert: {
@@ -110,6 +111,7 @@ export type Database = {
           faculty_id: string
           id?: string
           semester: number
+          section?: string
           year: number
         }
         Update: {
@@ -118,6 +120,7 @@ export type Database = {
           faculty_id?: string
           id?: string
           semester?: number
+          section?: string
           year?: number
         }
         Relationships: [
@@ -130,6 +133,61 @@ export type Database = {
           {
             foreignKeyName: 'course_allocations_faculty_id_fkey'
             columns: ['faculty_id']
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      feedback_submissions: {
+        Row: {
+          comment: string
+          created_at: string
+          department_id: string
+          faculty_id: string
+          id: string
+          rating: number
+          section: string
+          semester: number
+          student_id: string
+        }
+        Insert: {
+          comment: string
+          created_at?: string
+          department_id: string
+          faculty_id: string
+          id?: string
+          rating: number
+          section: string
+          semester: number
+          student_id: string
+        }
+        Update: {
+          comment?: string
+          created_at?: string
+          department_id?: string
+          faculty_id?: string
+          id?: string
+          rating?: number
+          section?: string
+          semester?: number
+          student_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'feedback_submissions_department_id_fkey'
+            columns: ['department_id']
+            referencedRelation: 'departments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'feedback_submissions_faculty_id_fkey'
+            columns: ['faculty_id']
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'feedback_submissions_student_id_fkey'
+            columns: ['student_id']
             referencedRelation: 'profiles'
             referencedColumns: ['id']
           },
@@ -227,7 +285,7 @@ export type Database = {
     }
     Enums: {
       leave_status: 'pending' | 'approved' | 'rejected'
-      user_role: 'faculty' | 'admin'
+      user_role: 'student' | 'faculty' | 'admin'
     }
     CompositeTypes: {
       [_ in never]: never

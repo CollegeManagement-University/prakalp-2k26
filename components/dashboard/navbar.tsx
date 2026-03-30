@@ -1,14 +1,63 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, MessageSquare, Settings, Search } from "lucide-react"
+import { Bell, MessageSquare, Settings, Search, Sun, Moon } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
+import { useTheme } from "next-themes"
+import { createClient } from "@/lib/supabase/client"
 
 export function Navbar() {
   const router = useRouter()
+  const { theme, setTheme, resolvedTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
+  const [displayName, setDisplayName] = useState("User")
+  const [displayRole, setDisplayRole] = useState("Member")
+  const [initials, setInitials] = useState("US")
+
+  useEffect(() => {
+    setMounted(true)
+
+    const loadProfile = async () => {
+      try {
+        const supabase = createClient()
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
+
+        if (!user) return
+
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("full_name, role")
+          .eq("id", user.id)
+          .maybeSingle()
+
+        const fullName = profile?.full_name || user.email || "User"
+        const roleText = profile?.role === "admin" ? "Admin" : "Faculty"
+        const nameParts = fullName.split(" ").filter(Boolean)
+        const computedInitials =
+          nameParts.length >= 2
+            ? `${nameParts[0][0]}${nameParts[1][0]}`
+            : fullName.slice(0, 2)
+
+        setDisplayName(fullName)
+        setDisplayRole(roleText)
+        setInitials(computedInitials.toUpperCase())
+      } catch {
+        setDisplayName("User")
+        setDisplayRole("Member")
+        setInitials("US")
+      }
+    }
+
+    void loadProfile()
+  }, [])
+
+  const activeTheme = resolvedTheme ?? theme
 
   return (
     <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border/50 bg-card/80 px-8 backdrop-blur-xl">
@@ -63,19 +112,30 @@ export function Navbar() {
           <Settings className="h-[18px] w-[18px] transition-transform duration-200 group-hover:rotate-45" />
         </button>
 
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          className="h-10 w-10 rounded-xl border-0 bg-gradient-to-br from-amber-300/70 via-orange-300/70 to-rose-300/70 text-amber-900 shadow-sm transition-all duration-300 hover:scale-105 hover:shadow-md dark:from-cyan-500/70 dark:via-blue-500/70 dark:to-indigo-500/70 dark:text-white"
+          onClick={() => setTheme(activeTheme === "dark" ? "light" : "dark")}
+          aria-label="Toggle theme"
+        >
+          {mounted && activeTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </Button>
+
         {/* Divider */}
         <div className="mx-3 h-8 w-px bg-border/60" />
 
         {/* User */}
         <div className="flex items-center gap-3.5 animate-fade-in stagger-5">
           <div className="text-right hidden sm:block">
-            <p className="text-sm font-semibold tracking-tight text-foreground">Dr. Elena Vance</p>
-            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-sidebar-primary">Chief Admin</p>
+            <p className="text-sm font-semibold tracking-tight text-foreground">{displayName}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-sidebar-primary">{displayRole}</p>
           </div>
           <div className="relative">
             <Avatar className="h-11 w-11 ring-2 ring-accent/30 ring-offset-2 ring-offset-card transition-all duration-300 hover:ring-accent/50 hover:scale-105">
-              <AvatarImage src="/avatar.png" alt="Dr. Elena Vance" />
-              <AvatarFallback className="bg-gradient-to-br from-accent to-accent/80 text-sm font-bold text-accent-foreground">EV</AvatarFallback>
+              <AvatarImage src="/avatar.png" alt={displayName} />
+              <AvatarFallback className="bg-gradient-to-br from-accent to-accent/80 text-sm font-bold text-accent-foreground">{initials}</AvatarFallback>
             </Avatar>
             <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-card bg-accent" />
           </div>

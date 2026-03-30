@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -56,6 +57,8 @@ const allocations: Allocation[] = [
 ]
 
 export function PendingAllocations() {
+  const router = useRouter()
+
   return (
     <Card className="overflow-hidden border-border/50 p-7 shadow-premium animate-fade-in opacity-0 stagger-4" style={{ animationFillMode: 'forwards' }}>
       <div className="mb-6 flex items-center justify-between">
@@ -63,6 +66,7 @@ export function PendingAllocations() {
         <Button 
           variant="ghost" 
           className="group gap-2 text-sm font-medium text-muted-foreground transition-all duration-200 hover:text-primary"
+          onClick={() => router.push('/approvals')}
         >
           View All 
           <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />

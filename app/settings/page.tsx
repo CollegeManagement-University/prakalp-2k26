@@ -234,6 +234,17 @@ export default function SettingsPage() {
 
             <div className="flex items-center justify-between">
               <div>
+                <p className="font-medium">Feedback Collection</p>
+                <p className="text-sm text-muted-foreground">Allow students to submit feedback</p>
+              </div>
+              <Switch
+                checked={settings.feedbackCollectionEnabled}
+                onCheckedChange={(value) => updateField("feedbackCollectionEnabled", value)}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
                 <p className="font-medium">AI Insights</p>
                 <p className="text-sm text-muted-foreground">Receive AI-generated suggestions</p>
               </div>

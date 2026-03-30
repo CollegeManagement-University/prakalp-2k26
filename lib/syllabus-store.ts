@@ -8,6 +8,7 @@ export type SyllabusRecord = {
   fileName: string
   uploadedAt: string
   keywords: string[]
+  generatedSubjects: string[]
 }
 
 const SYLLABUS_STORAGE_KEY = 'orchestra.syllabus.records'
@@ -23,7 +24,17 @@ export function loadSyllabusRecords(): SyllabusRecord[] {
       return []
     }
 
-    return JSON.parse(raw) as SyllabusRecord[]
+    const parsed = JSON.parse(raw) as Array<Partial<SyllabusRecord>>
+    return parsed.map((item) => ({
+      id: item.id ?? crypto.randomUUID(),
+      semester: item.semester ?? '1',
+      section: item.section ?? 'A',
+      department: (item.department as DepartmentCode) ?? 'cs',
+      fileName: item.fileName ?? 'unknown.pdf',
+      uploadedAt: item.uploadedAt ?? new Date().toISOString(),
+      keywords: item.keywords ?? [],
+      generatedSubjects: item.generatedSubjects ?? item.keywords ?? [],
+    }))
   } catch {
     return []
   }

@@ -1,6 +1,7 @@
 import { createBrowserClient } from '@supabase/ssr'
 
 import { getSupabaseEnv } from '@/lib/supabase/config'
+import type { Database } from '@/lib/supabase/database.types'
 
 export function createClient() {
   const { url, anonKey } = getSupabaseEnv()
@@ -9,5 +10,5 @@ export function createClient() {
     throw new Error('Missing Supabase environment variables for browser client.')
   }
 
-  return createBrowserClient(url, anonKey)
+  return createBrowserClient<Database>(url, anonKey)
 }

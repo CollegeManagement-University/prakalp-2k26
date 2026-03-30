@@ -13,9 +13,10 @@
 2. Execute the SQL in `supabase/schema.sql`.
 
 This creates:
-- `profiles` table
+- enums for roles and leave status
+- `departments`, `profiles`, `courses`, `course_allocations`, `timetable_slots`, `leave_requests`
 - profile creation trigger for new auth users
-- RLS policies for user/admin access
+- RLS policies for faculty/admin access control
 
 ## 3. Enable authentication provider
 
@@ -39,3 +40,5 @@ pnpm dev
 ```
 
 Use `/signup` and `/login` for auth flow.
+
+After login, the dashboard home page shows "Supabase Connection" status and reads from `profiles`, `departments`, and `courses` to verify schema linkage.

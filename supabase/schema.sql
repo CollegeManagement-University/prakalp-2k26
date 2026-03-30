@@ -225,3 +225,246 @@ create policy "Admins can review leaves"
   for update
   using (public.is_admin(auth.uid()))
   with check (public.is_admin(auth.uid()));
+
+-- Demo seed data (safe to re-run)
+insert into public.departments (name, code)
+values
+  ('Computer Science', 'CSE'),
+  ('Electronics and Communication', 'ECE'),
+  ('Mechanical Engineering', 'MECH')
+on conflict (code) do update set name = excluded.name;
+
+insert into public.courses (department_id, code, title)
+select d.id, v.code, v.title
+from (
+  values
+    ('CSE', 'CS301', 'Database Management Systems'),
+    ('CSE', 'CS302', 'Operating Systems'),
+    ('ECE', 'EC205', 'Digital Signal Processing'),
+    ('MECH', 'ME210', 'Thermodynamics')
+) as v(dept_code, code, title)
+join public.departments d on d.code = v.dept_code
+on conflict (code) do update
+set
+  department_id = excluded.department_id,
+  title = excluded.title;
+
+do $$
+declare
+  demo_admin_id uuid := '7cfe2738-88c1-4ab5-a5a4-b13c3fbeab21';
+  demo_faculty_1_id uuid := '4ab709d0-bf15-4d55-a62f-cf4b5951f8bb';
+  demo_faculty_2_id uuid := '0abf8d06-287b-4269-bdbd-577af67989d5';
+begin
+  if not exists (select 1 from auth.users where id = demo_admin_id) then
+    insert into auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      confirmation_token,
+      email_change,
+      email_change_token_new,
+      recovery_token
+    )
+    values (
+      demo_admin_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      'admin.demo@college.local',
+      crypt('Admin@12345', gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Demo Admin"}'::jsonb,
+      now(),
+      now(),
+      '',
+      '',
+      '',
+      ''
+    );
+
+    insert into auth.identities (
+      id,
+      user_id,
+      identity_data,
+      provider,
+      provider_id,
+      created_at,
+      updated_at,
+      last_sign_in_at
+    )
+    values (
+      gen_random_uuid(),
+      demo_admin_id,
+      jsonb_build_object('sub', demo_admin_id::text, 'email', 'admin.demo@college.local'),
+      'email',
+      'admin.demo@college.local',
+      now(),
+      now(),
+      now()
+    );
+  end if;
+
+  if not exists (select 1 from auth.users where id = demo_faculty_1_id) then
+    insert into auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      confirmation_token,
+      email_change,
+      email_change_token_new,
+      recovery_token
+    )
+    values (
+      demo_faculty_1_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      'faculty1.demo@college.local',
+      crypt('Faculty@12345', gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Prof. Anika Rao"}'::jsonb,
+      now(),
+      now(),
+      '',
+      '',
+      '',
+      ''
+    );
+
+    insert into auth.identities (
+      id,
+      user_id,
+      identity_data,
+      provider,
+      provider_id,
+      created_at,
+      updated_at,
+      last_sign_in_at
+    )
+    values (
+      gen_random_uuid(),
+      demo_faculty_1_id,
+      jsonb_build_object('sub', demo_faculty_1_id::text, 'email', 'faculty1.demo@college.local'),
+      'email',
+      'faculty1.demo@college.local',
+      now(),
+      now(),
+      now()
+    );
+  end if;
+
+  if not exists (select 1 from auth.users where id = demo_faculty_2_id) then
+    insert into auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      confirmation_token,
+      email_change,
+      email_change_token_new,
+      recovery_token
+    )
+    values (
+      demo_faculty_2_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      'faculty2.demo@college.local',
+      crypt('Faculty@12345', gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Prof. Kiran Mehta"}'::jsonb,
+      now(),
+      now(),
+      '',
+      '',
+      '',
+      ''
+    );
+
+    insert into auth.identities (
+      id,
+      user_id,
+      identity_data,
+      provider,
+      provider_id,
+      created_at,
+      updated_at,
+      last_sign_in_at
+    )
+    values (
+      gen_random_uuid(),
+      demo_faculty_2_id,
+      jsonb_build_object('sub', demo_faculty_2_id::text, 'email', 'faculty2.demo@college.local'),
+      'email',
+      'faculty2.demo@college.local',
+      now(),
+      now(),
+      now()
+    );
+  end if;
+
+  insert into public.profiles (id, full_name, role, department_id)
+  values (
+    demo_admin_id,
+    'Demo Admin',
+    'admin',
+    (select id from public.departments where code = 'CSE')
+  )
+  on conflict (id) do update
+  set
+    full_name = excluded.full_name,
+    role = excluded.role,
+    department_id = excluded.department_id;
+
+  insert into public.profiles (id, full_name, role, department_id)
+  values (
+    demo_faculty_1_id,
+    'Prof. Anika Rao',
+    'faculty',
+    (select id from public.departments where code = 'CSE')
+  )
+  on conflict (id) do update
+  set
+    full_name = excluded.full_name,
+    role = excluded.role,
+    department_id = excluded.department_id;
+
+  insert into public.profiles (id, full_name, role, department_id)
+  values (
+    demo_faculty_2_id,
+    'Prof. Kiran Mehta',
+    'faculty',
+    (select id from public.departments where code = 'ECE')
+  )
+  on conflict (id) do update
+  set
+    full_name = excluded.full_name,
+    role = excluded.role,
+    department_id = excluded.department_id;
+end $$;

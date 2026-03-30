@@ -1,11 +1,15 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { Bell, MessageSquare, Settings, Search } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { toast } from "sonner"
 
 export function Navbar() {
+  const router = useRouter()
+
   return (
     <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-border/50 bg-card/80 px-8 backdrop-blur-xl">
       {/* Brand */}
@@ -29,7 +33,10 @@ export function Navbar() {
       {/* Right Side */}
       <div className="flex items-center gap-2">
         {/* Notifications */}
-        <button className="group relative flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-all duration-200 hover:bg-muted/60 hover:text-foreground animate-fade-in stagger-2">
+        <button
+          className="group relative flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-all duration-200 hover:bg-muted/60 hover:text-foreground animate-fade-in stagger-2"
+          onClick={() => router.push('/notifications')}
+        >
           <Bell className="h-[18px] w-[18px] transition-transform duration-200 group-hover:scale-110" />
           <span className="absolute right-2 top-2 flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive opacity-75" />
@@ -38,12 +45,21 @@ export function Navbar() {
         </button>
 
         {/* Messages */}
-        <button className="group flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-all duration-200 hover:bg-muted/60 hover:text-foreground animate-fade-in stagger-3">
+        <button
+          className="group flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-all duration-200 hover:bg-muted/60 hover:text-foreground animate-fade-in stagger-3"
+          onClick={() => {
+            router.push('/feedback')
+            toast.info('Opening feedback messages')
+          }}
+        >
           <MessageSquare className="h-[18px] w-[18px] transition-transform duration-200 group-hover:scale-110" />
         </button>
 
         {/* Settings */}
-        <button className="group flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-all duration-200 hover:bg-muted/60 hover:text-foreground animate-fade-in stagger-4">
+        <button
+          className="group flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-all duration-200 hover:bg-muted/60 hover:text-foreground animate-fade-in stagger-4"
+          onClick={() => router.push('/settings')}
+        >
           <Settings className="h-[18px] w-[18px] transition-transform duration-200 group-hover:rotate-45" />
         </button>
 

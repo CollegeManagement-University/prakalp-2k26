@@ -17,6 +17,7 @@ This creates:
 - `departments`, `profiles`, `courses`, `course_allocations`, `timetable_slots`, `leave_requests`
 - profile creation trigger for new auth users
 - RLS policies for faculty/admin access control
+- demo seed data for departments, courses, and auth users
 
 ## 3. Enable authentication provider
 
@@ -42,3 +43,11 @@ pnpm dev
 Use `/signup` and `/login` for auth flow.
 
 After login, the dashboard home page shows "Supabase Connection" status and reads from `profiles`, `departments`, and `courses` to verify schema linkage.
+
+## Demo users (created by schema.sql)
+
+- `admin.demo@college.local` / `Admin@12345` (admin)
+- `faculty1.demo@college.local` / `Faculty@12345` (faculty)
+- `faculty2.demo@college.local` / `Faculty@12345` (faculty)
+
+If your Supabase project blocks direct inserts into `auth.users`, create these users from Authentication > Users, then rerun `supabase/schema.sql` to upsert roles/profile data.

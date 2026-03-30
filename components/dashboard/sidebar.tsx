@@ -1,7 +1,9 @@
 "use client"
 
 import Link from "next/link"
+import { useEffect, useState } from "react"
 import { usePathname } from "next/navigation"
+import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import {
   LayoutDashboard,
@@ -15,10 +17,14 @@ import {
   Settings,
   Plus,
   Boxes,
+  Bell,
+  GraduationCap,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { toast } from "sonner"
+import { createClient } from "@/lib/supabase/client"
 
-const menuItems = [
+const adminMenuItems = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/" },
   { label: "Faculty", icon: Users, href: "/faculty" },
   { label: "Approvals", icon: ClipboardCheck, href: "/approvals" },
@@ -30,8 +36,48 @@ const menuItems = [
   { label: "Settings", icon: Settings, href: "/settings" },
 ]
 
+const facultyMenuItems = [
+  { label: "Timetable", icon: Calendar, href: "/timetable" },
+  { label: "Apply Leave", icon: CalendarOff, href: "/leave" },
+  { label: "Qualifications", icon: GraduationCap, href: "/qualifications" },
+  { label: "Notifications", icon: Bell, href: "/notifications" },
+]
+
 export function Sidebar() {
   const pathname = usePathname()
+  const router = useRouter()
+  const [role, setRole] = useState<"admin" | "faculty">("admin")
+
+  useEffect(() => {
+    const loadRole = async () => {
+      try {
+        const supabase = createClient()
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
+
+        if (!user) {
+          return
+        }
+
+        const { data } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .maybeSingle()
+
+        if (data?.role === "faculty") {
+          setRole("faculty")
+        }
+      } catch {
+        // Keep admin menu when profile cannot be resolved.
+      }
+    }
+
+    void loadRole()
+  }, [])
+
+  const menuItems = role === "faculty" ? facultyMenuItems : adminMenuItems
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-sidebar-border/50 bg-sidebar shadow-premium">
@@ -49,13 +95,21 @@ export function Sidebar() {
       </div>
 
       {/* New Allocation Button */}
-      <div className="px-5 pb-6">
-        <Button className="group relative w-full gap-2.5 overflow-hidden rounded-xl bg-primary py-5 font-medium shadow-lg shadow-primary/25 transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-primary/30">
-          <span className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 opacity-0 transition-opacity duration-500 group-hover:opacity-100 group-hover:animate-shimmer" />
-          <Plus className="h-4 w-4 transition-transform duration-300 group-hover:rotate-90" />
-          <span className="relative">New Allocation</span>
-        </Button>
-      </div>
+      {role === "admin" ? (
+        <div className="px-5 pb-6">
+          <Button
+            className="group relative w-full gap-2.5 overflow-hidden rounded-xl bg-primary py-5 font-medium shadow-lg shadow-primary/25 transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-primary/30"
+            onClick={() => {
+              router.push('/approvals')
+              toast.info('Opening approvals to create a new allocation request')
+            }}
+          >
+            <span className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 opacity-0 transition-opacity duration-500 group-hover:opacity-100 group-hover:animate-shimmer" />
+            <Plus className="h-4 w-4 transition-transform duration-300 group-hover:rotate-90" />
+            <span className="relative">New Allocation</span>
+          </Button>
+        </div>
+      ) : null}
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-4 overflow-y-auto">

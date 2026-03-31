@@ -21,16 +21,28 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Sparkles, Lock, Pencil, RefreshCw } from "lucide-react"
+import {
+  Sparkles,
+  Lock,
+  LockOpen,
+  Pencil,
+  RefreshCw,
+  FileText,
+  FileSpreadsheet,
+  Printer,
+  ShieldAlert,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 import { defaultAppSettings, loadAppSettings } from "@/lib/app-settings"
 import { findSyllabusRecord, loadSyllabusRecords, type DepartmentCode } from "@/lib/syllabus-store"
 import { departmentLabelByCode, departmentOptions } from "@/lib/departments"
 import { toast } from "sonner"
 import { createClient } from "@/lib/supabase/client"
+import * as XLSX from "xlsx"
+import { jsPDF } from "jspdf"
+import autoTable from "jspdf-autotable"
 
 const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-
 const allDays = [...weekdays, "Saturday"]
 
 const subjectsByDepartment: Record<string, string[]> = {
@@ -59,7 +71,7 @@ const facultyByDepartment: Record<string, string[]> = {
   eng: ["Dr. Rao", "Prof. Menon", "Dr. Thomas", "Prof. Kapoor"],
 }
 
-const nonTeachingSubjects = new Set(["year", "syllabus", "lunch break", "break"])
+const nonTeachingSubjects = new Set(["year", "syllabus", "lunch break", "break", "no class"])
 
 type Slot = {
   subject: string
@@ -83,9 +95,27 @@ type EditState = {
 
 type AllocationLookup = Record<string, { subject: string }>
 
+type SubjectConstraint = {
+  min: number
+  max: number
+}
+
+type SubjectConstraintMap = Record<string, SubjectConstraint>
+
+type ConflictItem = {
+  type: "room" | "faculty"
+  day: string
+  periodKey: string
+  value: string
+}
+
 function isTeachingSubject(value: string) {
   const normalized = value.trim().toLowerCase()
   return Boolean(normalized) && !nonTeachingSubjects.has(normalized)
+}
+
+function slotKey(day: string, periodKey: string) {
+  return `${day}__${periodKey}`
 }
 
 function activeDaysFromSettings(saturdayWorking: boolean) {
@@ -145,6 +175,57 @@ function buildPeriods(
   return rows
 }
 
+function detectConflicts(table: TimetableGrid, rows: Period[], days: string[]) {
+  const roomMap = new Map<string, Slot[]>()
+  const facultyMap = new Map<string, Slot[]>()
+
+  for (const day of days) {
+    for (const row of rows) {
+      const slot = table[day]?.[row.key]
+      if (!slot || slot.isBreak) {
+        continue
+      }
+
+      const roomKey = `${day}|${row.key}|${slot.room.trim().toLowerCase()}`
+      const facultyKey = `${day}|${row.key}|${slot.faculty.trim().toLowerCase()}`
+
+      roomMap.set(roomKey, [...(roomMap.get(roomKey) ?? []), slot])
+      facultyMap.set(facultyKey, [...(facultyMap.get(facultyKey) ?? []), slot])
+    }
+  }
+
+  const conflicts: ConflictItem[] = []
+
+  roomMap.forEach((slots, key) => {
+    if (slots.length <= 1) {
+      return
+    }
+    const [day, periodKey, value] = key.split("|")
+    conflicts.push({ type: "room", day, periodKey, value })
+  })
+
+  facultyMap.forEach((slots, key) => {
+    if (slots.length <= 1) {
+      return
+    }
+    const [day, periodKey, value] = key.split("|")
+    conflicts.push({ type: "faculty", day, periodKey, value })
+  })
+
+  return conflicts
+}
+
+function sanitizeConstraintMap(subjects: string[], constraints: SubjectConstraintMap) {
+  const next: SubjectConstraintMap = {}
+  for (const subject of subjects) {
+    const current = constraints[subject] ?? { min: 2, max: 6 }
+    const min = Math.max(0, Math.min(current.min, 30))
+    const max = Math.max(min, Math.min(current.max, 40))
+    next[subject] = { min, max }
+  }
+  return next
+}
+
 function generateTimetable(
   periodRows: Period[],
   activeDays: string[],
@@ -152,18 +233,24 @@ function generateTimetable(
   department: string,
   section: string,
   semester: string,
-  subjectPool?: string[],
+  subjectPool: string[],
+  subjectConstraints: SubjectConstraintMap,
+  lockedKeys: Set<string>,
+  existingTimetable: TimetableGrid,
 ): TimetableGrid {
-  const sanitizedPool = (subjectPool ?? []).filter(isTeachingSubject)
-  const subjects = sanitizedPool.length > 0 ? sanitizedPool : subjectsByDepartment[department] ?? subjectsByDepartment.cs
+  const subjects = Array.from(new Set(subjectPool.filter(isTeachingSubject)))
   const facultyList = facultyByDepartment[department] ?? facultyByDepartment.cs
-  const subjectFacultyMap = new Map(subjects.map((subject, index) => [subject, facultyList[index % facultyList.length]]))
 
+  const subjectFacultyMap = new Map(subjects.map((subject, index) => [subject, facultyList[index % facultyList.length]]))
   const table: TimetableGrid = {}
-  const teachingSlots: Array<{ day: string; periodKey: string }> = []
+
+  const periodIndexByKey = new Map(periodRows.map((row, index) => [row.key, index]))
+  const candidateSlots: Array<{ day: string; periodKey: string; periodIndex: number }> = []
+  const subjectCounts = new Map<string, number>()
 
   for (const day of activeDays) {
     table[day] = {}
+
     const dayRows = periodRows.filter((row) => !row.isBreak)
     const allowedRowsCount =
       day === "Saturday" && saturdayMode === "half-day"
@@ -171,75 +258,130 @@ function generateTimetable(
         : dayRows.length
 
     let teachingIndex = 0
-    for (const period of periodRows) {
-      if (period.isBreak) {
-        table[day][period.key] = {
-          subject: "LUNCH BREAK",
-          faculty: "",
-          room: "",
-          isBreak: true,
-        }
+    for (const row of periodRows) {
+      if (row.isBreak) {
+        table[day][row.key] = { subject: "LUNCH BREAK", faculty: "", room: "", isBreak: true }
         continue
       }
 
       if (teachingIndex >= allowedRowsCount) {
-        table[day][period.key] = {
-          subject: "NO CLASS",
-          faculty: "",
-          room: "",
-          isBreak: true,
-        }
+        table[day][row.key] = { subject: "NO CLASS", faculty: "", room: "", isBreak: true }
         teachingIndex += 1
         continue
       }
 
-      teachingSlots.push({ day, periodKey: period.key })
-      table[day][period.key] = null
+      const key = slotKey(day, row.key)
+      const existing = existingTimetable[day]?.[row.key]
+      if (lockedKeys.has(key) && existing && !existing.isBreak && isTeachingSubject(existing.subject)) {
+        table[day][row.key] = existing
+        subjectCounts.set(existing.subject, (subjectCounts.get(existing.subject) ?? 0) + 1)
+      } else {
+        table[day][row.key] = null
+        candidateSlots.push({ day, periodKey: row.key, periodIndex: periodIndexByKey.get(row.key) ?? 0 })
+      }
+
       teachingIndex += 1
     }
   }
 
-  if (teachingSlots.length === 0 || subjects.length === 0) {
+  if (subjects.length === 0 || candidateSlots.length === 0) {
     return table
   }
 
-  let slotIndex = 0
+  const constraints = sanitizeConstraintMap(subjects, subjectConstraints)
+
+  const canPlace = (subject: string, day: string, periodKey: string) => {
+    const periodIndex = periodIndexByKey.get(periodKey) ?? 0
+
+    if (periodIndex === 0) {
+      const existingFirst = table[day]?.[periodKey]
+      if (!existingFirst || existingFirst.isBreak) {
+        return true
+      }
+    }
+
+    const prev = periodRows[periodIndex - 1]
+    if (prev) {
+      const prevSlot = table[day]?.[prev.key]
+      if (prevSlot && !prevSlot.isBreak && prevSlot.subject === subject) {
+        return false
+      }
+    }
+
+    const next = periodRows[periodIndex + 1]
+    if (next) {
+      const nextSlot = table[day]?.[next.key]
+      if (nextSlot && !nextSlot.isBreak && nextSlot.subject === subject) {
+        return false
+      }
+    }
+
+    return true
+  }
+
+  const assign = (subject: string, day: string, periodKey: string, slotIndexSeed: number) => {
+    const room = `${department.toUpperCase()}-${100 + ((slotIndexSeed + section.charCodeAt(0)) % 20)}`
+    table[day][periodKey] = {
+      subject,
+      faculty: subjectFacultyMap.get(subject) ?? facultyList[slotIndexSeed % facultyList.length],
+      room,
+    }
+    subjectCounts.set(subject, (subjectCounts.get(subject) ?? 0) + 1)
+  }
+
+  const findAndAssign = (subject: string, slots: Array<{ day: string; periodKey: string; periodIndex: number }>) => {
+    let chosenIndex = slots.findIndex((slot) => canPlace(subject, slot.day, slot.periodKey))
+    if (chosenIndex < 0) {
+      chosenIndex = 0
+    }
+
+    if (chosenIndex < 0) {
+      return false
+    }
+
+    const chosen = slots[chosenIndex]
+    assign(subject, chosen.day, chosen.periodKey, chosenIndex)
+    slots.splice(chosenIndex, 1)
+    return true
+  }
+
+  const availableSlots = [...candidateSlots]
+
+  const totalMin = subjects.reduce((sum, subject) => sum + constraints[subject].min, 0)
+  if (totalMin > availableSlots.length + Array.from(subjectCounts.values()).reduce((a, b) => a + b, 0)) {
+    toast.warning("Minimum periods exceed available slots. Constraint targets were relaxed during generation.")
+  }
+
   for (const subject of subjects) {
-    const slot = teachingSlots[slotIndex]
-    const faculty = subjectFacultyMap.get(subject) ?? facultyList[slotIndex % facultyList.length]
-    const room = `${department.toUpperCase()}-${100 + ((slotIndex + section.charCodeAt(0)) % 20)}`
-    table[slot.day][slot.periodKey] = { subject, faculty, room }
-    slotIndex += 1
-    if (slotIndex >= teachingSlots.length) {
-      return table
+    let required = Math.max(0, constraints[subject].min - (subjectCounts.get(subject) ?? 0))
+    while (required > 0 && availableSlots.length > 0) {
+      if (!findAndAssign(subject, availableSlots)) {
+        break
+      }
+      required -= 1
     }
   }
 
-  for (; slotIndex < teachingSlots.length; slotIndex += 1) {
-    const slot = teachingSlots[slotIndex]
-    const subject = subjects[(slotIndex + Number(semester)) % subjects.length]
-    const faculty = subjectFacultyMap.get(subject) ?? facultyList[(slotIndex + Number(semester)) % facultyList.length]
-    const room = `${department.toUpperCase()}-${100 + ((slotIndex + section.charCodeAt(0)) % 20)}`
-    table[slot.day][slot.periodKey] = { subject, faculty, room }
-  }
+  let safety = 0
+  while (availableSlots.length > 0 && safety < 10000) {
+    safety += 1
+    const slot = availableSlots[0]
 
-  // Leisure is only allowed at lower priority near the end of a day, never first period.
-  for (const day of activeDays) {
-    const dayTeachingKeys = periodRows.filter((row) => !row.isBreak).map((row) => row.key)
-    if (dayTeachingKeys.length < 2) {
-      continue
+    const candidates = subjects
+      .filter((subject) => (subjectCounts.get(subject) ?? 0) < constraints[subject].max)
+      .sort((a, b) => (subjectCounts.get(a) ?? 0) - (subjectCounts.get(b) ?? 0))
+
+    let chosen = candidates.find((subject) => canPlace(subject, slot.day, slot.periodKey))
+    if (!chosen) {
+      chosen = candidates[0] ?? subjects[0]
     }
 
-    const shouldLeaveLastFree = (day.length + Number(semester) + section.charCodeAt(0)) % 4 === 0
-    if (!shouldLeaveLastFree) {
-      continue
+    if (!chosen) {
+      break
     }
 
-    const lastKey = dayTeachingKeys[dayTeachingKeys.length - 1]
-    const current = table[day]?.[lastKey]
-    if (current && !current.isBreak) {
-      table[day][lastKey] = null
-    }
+    assign(chosen, slot.day, slot.periodKey, safety)
+    availableSlots.shift()
   }
 
   return table
@@ -265,6 +407,9 @@ export default function TimetablePage() {
 
   const [periodRows, setPeriodRows] = useState<Period[]>([])
   const [timetable, setTimetable] = useState<TimetableGrid>({})
+  const [lockedSlotKeys, setLockedSlotKeys] = useState<string[]>([])
+  const [subjectConstraints, setSubjectConstraints] = useState<SubjectConstraintMap>({})
+  const [conflicts, setConflicts] = useState<ConflictItem[]>([])
 
   const [editing, setEditing] = useState<EditState | null>(null)
   const [editSubject, setEditSubject] = useState("")
@@ -272,12 +417,7 @@ export default function TimetablePage() {
   const [editRoom, setEditRoom] = useState("")
 
   const subjectSuggestions = useMemo(() => {
-    const syllabus = findSyllabusRecord(
-      loadSyllabusRecords(),
-      semester,
-      section,
-      department as DepartmentCode,
-    )
+    const syllabus = findSyllabusRecord(loadSyllabusRecords(), semester, section, department as DepartmentCode)
     const syllabusSubjects = syllabus?.generatedSubjects ?? syllabus?.keywords ?? []
     const base = subjectsByDepartment[department] ?? subjectsByDepartment.cs
     return Array.from(new Set([...syllabusSubjects, ...base])).filter(isTeachingSubject)
@@ -295,6 +435,20 @@ export default function TimetablePage() {
     })
     return map
   }, [department, subjectSuggestions])
+
+  const selectedDepartmentLabel = useMemo(() => {
+    return departmentLabelByCode[department as DepartmentCode] ?? "Computer Science"
+  }, [department])
+
+  const lockedSet = useMemo(() => new Set(lockedSlotKeys), [lockedSlotKeys])
+
+  useEffect(() => {
+    setSubjectConstraints((prev) => sanitizeConstraintMap(subjectSuggestions, prev))
+  }, [subjectSuggestions])
+
+  useEffect(() => {
+    setConflicts(detectConflicts(timetable, periodRows, activeDays))
+  }, [timetable, periodRows, activeDays])
 
   useEffect(() => {
     const loadPageData = async () => {
@@ -316,11 +470,7 @@ export default function TimetablePage() {
         return
       }
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", user.id)
-        .maybeSingle()
+      const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle()
 
       if (profile?.role === "faculty") {
         setRole("faculty")
@@ -339,10 +489,7 @@ export default function TimetablePage() {
           return
         }
 
-        const allocations = (allocationsData ?? []) as Array<{
-          id: string
-          courses: { title: string } | null
-        }>
+        const allocations = (allocationsData ?? []) as Array<{ id: string; courses: { title: string } | null }>
 
         if (allocations.length === 0) {
           setPeriodRows([])
@@ -390,8 +537,7 @@ export default function TimetablePage() {
         }
 
         const rows = [...periodMap.values()].sort(
-          (a, b) =>
-            timeStringToMinutes(a.key.split("-")[0]) - timeStringToMinutes(b.key.split("-")[0]),
+          (a, b) => timeStringToMinutes(a.key.split("-")[0]) - timeStringToMinutes(b.key.split("-")[0]),
         )
 
         const dayMap: Record<number, string> = {
@@ -438,9 +584,32 @@ export default function TimetablePage() {
     void loadPageData()
   }, [])
 
-  const selectedDepartmentLabel = useMemo(() => {
-    return departmentLabelByCode[department as DepartmentCode] ?? "Computer Science"
-  }, [department])
+  const setConstraint = (subject: string, field: "min" | "max", value: number) => {
+    setSubjectConstraints((prev) => {
+      const current = prev[subject] ?? { min: 2, max: 6 }
+      const next = { ...current, [field]: Math.max(0, Math.floor(value || 0)) }
+      if (next.max < next.min) {
+        if (field === "min") {
+          next.max = next.min
+        } else {
+          next.min = next.max
+        }
+      }
+      return { ...prev, [subject]: next }
+    })
+  }
+
+  const toggleCriticalLock = (day: string, periodKey: string) => {
+    const key = slotKey(day, periodKey)
+    setLockedSlotKeys((prev) => {
+      if (prev.includes(key)) {
+        toast.success("Critical lock removed")
+        return prev.filter((item) => item !== key)
+      }
+      toast.success("Critical lock added")
+      return [...prev, key]
+    })
+  }
 
   const createSchedule = () => {
     const settings = loadAppSettings()
@@ -449,17 +618,10 @@ export default function TimetablePage() {
     setSaturdayMode(settings.saturdayMode)
 
     const syllabi = loadSyllabusRecords()
-    const matchedSyllabus = findSyllabusRecord(
-      syllabi,
-      semester,
-      section,
-      department as DepartmentCode,
-    )
+    const matchedSyllabus = findSyllabusRecord(syllabi, semester, section, department as DepartmentCode)
 
     if (!matchedSyllabus) {
-      toast.error(
-        `Upload syllabus for Semester ${semester}, Section ${section}, ${department.toUpperCase()} first`,
-      )
+      toast.error(`Upload syllabus for Semester ${semester}, Section ${section}, ${department.toUpperCase()} first`)
       setShowTimetable(false)
       return
     }
@@ -496,25 +658,48 @@ export default function TimetablePage() {
       return
     }
 
-    setPeriodRows(rows)
-    setTimetable(
-      generateTimetable(
-        rows,
-        daysForGeneration,
-        settings.saturdayMode,
-        department,
-        section,
-        semester,
-        subjectsFromSyllabus,
-      ),
+    const safeConstraints = sanitizeConstraintMap(subjectsFromSyllabus, subjectConstraints)
+    setSubjectConstraints(safeConstraints)
+
+    const next = generateTimetable(
+      rows,
+      daysForGeneration,
+      settings.saturdayMode,
+      department,
+      section,
+      semester,
+      subjectsFromSyllabus,
+      safeConstraints,
+      lockedSet,
+      timetable,
     )
+
+    const nextConflicts = detectConflicts(next, rows, daysForGeneration)
+
+    setPeriodRows(rows)
+    setTimetable(next)
     setShowTimetable(true)
-    toast.success(`Timetable generated using syllabus: ${matchedSyllabus.fileName}`)
+    setConflicts(nextConflicts)
+
+    if (nextConflicts.length > 0) {
+      toast.warning(`Generated with ${nextConflicts.length} conflict(s). Review before finalizing.`)
+    } else {
+      toast.success(`Timetable generated using syllabus: ${matchedSyllabus.fileName}`)
+    }
+  }
+
+  const runConflictEngine = () => {
+    const found = detectConflicts(timetable, periodRows, activeDays)
+    setConflicts(found)
+    if (found.length === 0) {
+      toast.success("Conflict engine: no room or same-time faculty collisions found")
+      return
+    }
+    toast.error(`Conflict engine detected ${found.length} issue(s)`)
   }
 
   const openEditor = (day: string, periodKey: string) => {
     const current = timetable[day]?.[periodKey]
-
     if (current?.isBreak) {
       return
     }
@@ -549,6 +734,26 @@ export default function TimetablePage() {
       return
     }
 
+    const periodIndex = periodRows.findIndex((row) => row.key === editing.periodKey)
+    const prevRow = periodRows[periodIndex - 1]
+    const nextRow = periodRows[periodIndex + 1]
+
+    if (prevRow) {
+      const prevSlot = timetable[editing.day]?.[prevRow.key]
+      if (prevSlot && !prevSlot.isBreak && prevSlot.subject === subject) {
+        toast.error("Subject spread rule violated: consecutive periods cannot have the same subject")
+        return
+      }
+    }
+
+    if (nextRow) {
+      const nextSlot = timetable[editing.day]?.[nextRow.key]
+      if (nextSlot && !nextSlot.isBreak && nextSlot.subject === subject) {
+        toast.error("Subject spread rule violated: consecutive periods cannot have the same subject")
+        return
+      }
+    }
+
     setTimetable((prev) => ({
       ...prev,
       [editing.day]: {
@@ -565,6 +770,135 @@ export default function TimetablePage() {
     toast.success("Slot updated")
   }
 
+  const toExportRows = () => {
+    const headers = ["Time", ...activeDays]
+    const rows = periodRows.map((period) => {
+      const row: string[] = [period.label]
+      for (const day of activeDays) {
+        const slot = timetable[day]?.[period.key]
+        if (!slot) {
+          row.push("-")
+          continue
+        }
+        if (slot.isBreak) {
+          row.push(slot.subject)
+          continue
+        }
+        row.push(`${slot.subject} | ${slot.faculty} | ${slot.room}`)
+      }
+      return row
+    })
+
+    return { headers, rows }
+  }
+
+  const exportExcel = () => {
+    if (!showTimetable || periodRows.length === 0) {
+      toast.error("Generate timetable first")
+      return
+    }
+
+    const { headers, rows } = toExportRows()
+    const data = [headers, ...rows]
+    const ws = XLSX.utils.aoa_to_sheet(data)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, "Timetable")
+    XLSX.writeFile(wb, `timetable-sem${semester}-sec${section}.xlsx`)
+    toast.success("Excel exported")
+  }
+
+  const exportPdf = () => {
+    if (!showTimetable || periodRows.length === 0) {
+      toast.error("Generate timetable first")
+      return
+    }
+
+    const { headers, rows } = toExportRows()
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" })
+    doc.text(`Timetable - Semester ${semester} Section ${section} (${selectedDepartmentLabel})`, 40, 32)
+
+    autoTable(doc, {
+      head: [headers],
+      body: rows,
+      startY: 44,
+      styles: { fontSize: 8, cellPadding: 4 },
+      headStyles: { fillColor: [30, 64, 175] },
+    })
+
+    doc.save(`timetable-sem${semester}-sec${section}.pdf`)
+    toast.success("PDF exported")
+  }
+
+  const printFacultyViews = () => {
+    if (!showTimetable || periodRows.length === 0) {
+      toast.error("Generate timetable first")
+      return
+    }
+
+    const facultyMap = new Map<string, Array<{ day: string; time: string; subject: string; room: string }>>()
+
+    for (const day of activeDays) {
+      for (const row of periodRows) {
+        const slot = timetable[day]?.[row.key]
+        if (!slot || slot.isBreak || !slot.faculty.trim()) {
+          continue
+        }
+        const entries = facultyMap.get(slot.faculty) ?? []
+        entries.push({ day, time: row.label, subject: slot.subject, room: slot.room })
+        facultyMap.set(slot.faculty, entries)
+      }
+    }
+
+    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1200,height=800")
+    if (!printWindow) {
+      toast.error("Unable to open print window")
+      return
+    }
+
+    const facultySections = Array.from(facultyMap.entries())
+      .map(([faculty, entries]) => {
+        const rows = entries
+          .map(
+            (entry) => `<tr><td>${entry.day}</td><td>${entry.time}</td><td>${entry.subject}</td><td>${entry.room}</td></tr>`,
+          )
+          .join("")
+
+        return `
+          <section style="margin-bottom:24px; page-break-inside: avoid;">
+            <h2 style="margin:0 0 8px 0;">${faculty}</h2>
+            <table style="width:100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr>
+                  <th style="border:1px solid #ccc; padding:6px; text-align:left;">Day</th>
+                  <th style="border:1px solid #ccc; padding:6px; text-align:left;">Time</th>
+                  <th style="border:1px solid #ccc; padding:6px; text-align:left;">Subject</th>
+                  <th style="border:1px solid #ccc; padding:6px; text-align:left;">Room</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </section>
+        `
+      })
+      .join("")
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Faculty Timetable Views</title>
+        </head>
+        <body style="font-family: Segoe UI, sans-serif; padding: 20px;">
+          <h1 style="margin-bottom: 16px;">Per-Faculty Printable Timetable</h1>
+          ${facultySections || "<p>No faculty allocations available.</p>"}
+        </body>
+      </html>
+    `)
+    printWindow.document.close()
+    printWindow.focus()
+    printWindow.print()
+    toast.success("Opened per-faculty printable views")
+  }
+
   return (
     <DashboardLayout>
       <div className="mb-6 flex items-center justify-between">
@@ -576,131 +910,191 @@ export default function TimetablePage() {
               : "Generate and manage class schedules"}
           </p>
         </div>
-        {role === "admin" ? <div className="flex items-center gap-2">
-          <Button variant="outline" className="gap-2" onClick={createSchedule}>
-            <RefreshCw className="h-4 w-4" />
-            Regenerate
-          </Button>
-          <Button
-            className={cn("gap-2", isLocked && "bg-accent hover:bg-accent/90")}
-            onClick={() => setIsLocked((prev) => !prev)}
-          >
-            <Lock className="h-4 w-4" />
-            {isLocked ? "Locked" : "Lock Timetable"}
-          </Button>
-        </div> : null}
+
+        {role === "admin" ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" className="gap-2" onClick={runConflictEngine}>
+              <ShieldAlert className="h-4 w-4" />
+              Run Conflict Check
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={exportExcel}>
+              <FileSpreadsheet className="h-4 w-4" />
+              Excel
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={exportPdf}>
+              <FileText className="h-4 w-4" />
+              PDF
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={printFacultyViews}>
+              <Printer className="h-4 w-4" />
+              Print Faculty Views
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={createSchedule}>
+              <RefreshCw className="h-4 w-4" />
+              Regenerate
+            </Button>
+            <Button
+              className={cn("gap-2", isLocked && "bg-accent hover:bg-accent/90")}
+              onClick={() => setIsLocked((prev) => !prev)}
+            >
+              <Lock className="h-4 w-4" />
+              {isLocked ? "Locked" : "Lock Timetable"}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       <div className={cn("grid grid-cols-1 gap-6", role === "admin" ? "lg:grid-cols-4" : "lg:grid-cols-1")}>
-        {role === "admin" ? <Card className="p-6 lg:col-span-1">
-          <h3 className="mb-4 text-lg font-semibold">Configuration</h3>
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="semester">Semester</Label>
-              <Select value={semester} onValueChange={setSemester}>
-                <SelectTrigger id="semester" className="mt-1.5">
-                  <SelectValue placeholder="Select semester" />
-                </SelectTrigger>
-                <SelectContent>
-                  {[1, 2, 3, 4, 5, 6, 7, 8].map((sem) => (
-                    <SelectItem key={sem} value={sem.toString()}>
-                      Semester {sem}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+        {role === "admin" ? (
+          <Card className="p-6 lg:col-span-1">
+            <h3 className="mb-4 text-lg font-semibold">Configuration</h3>
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="semester">Semester</Label>
+                <Select value={semester} onValueChange={setSemester}>
+                  <SelectTrigger id="semester" className="mt-1.5">
+                    <SelectValue placeholder="Select semester" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map((sem) => (
+                      <SelectItem key={sem} value={sem.toString()}>
+                        Semester {sem}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div>
-              <Label htmlFor="section">Section</Label>
-              <Select value={section} onValueChange={setSection}>
-                <SelectTrigger id="section" className="mt-1.5">
-                  <SelectValue placeholder="Select section" />
-                </SelectTrigger>
-                <SelectContent>
-                  {["A", "B", "C", "D"].map((sec) => (
-                    <SelectItem key={sec} value={sec}>
-                      Section {sec}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+              <div>
+                <Label htmlFor="section">Section</Label>
+                <Select value={section} onValueChange={setSection}>
+                  <SelectTrigger id="section" className="mt-1.5">
+                    <SelectValue placeholder="Select section" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["A", "B", "C", "D"].map((sec) => (
+                      <SelectItem key={sec} value={sec}>
+                        Section {sec}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div>
-              <Label htmlFor="department">Department</Label>
-              <Select value={department} onValueChange={setDepartment}>
-                <SelectTrigger id="department" className="mt-1.5">
-                  <SelectValue placeholder="Select department" />
-                </SelectTrigger>
-                <SelectContent>
-                  {departmentOptions.map((item) => (
-                    <SelectItem key={item.code} value={item.code}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+              <div>
+                <Label htmlFor="department">Department</Label>
+                <Select value={department} onValueChange={setDepartment}>
+                  <SelectTrigger id="department" className="mt-1.5">
+                    <SelectValue placeholder="Select department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departmentOptions.map((item) => (
+                      <SelectItem key={item.code} value={item.code}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div>
-              <Label htmlFor="start-time">Start Time</Label>
-              <Input
-                id="start-time"
-                type="time"
-                value={startTime}
-                className="mt-1.5"
-                onChange={(event) => setStartTime(event.target.value)}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="end-time">End Time</Label>
-              <Input
-                id="end-time"
-                type="time"
-                value={endTime}
-                className="mt-1.5"
-                onChange={(event) => setEndTime(event.target.value)}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="period-duration">Period Duration (minutes)</Label>
-              <Input
-                id="period-duration"
-                type="number"
-                min={30}
-                max={180}
-                value={periodDuration}
-                className="mt-1.5"
-                onChange={(event) => setPeriodDuration(Number(event.target.value || 60))}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="break-start">Break Time</Label>
-              <div className="mt-1.5 flex gap-2">
+              <div>
+                <Label htmlFor="start-time">Start Time</Label>
                 <Input
-                  id="break-start"
+                  id="start-time"
                   type="time"
-                  value={breakStart}
-                  onChange={(event) => setBreakStart(event.target.value)}
-                />
-                <Input
-                  type="time"
-                  value={breakEnd}
-                  onChange={(event) => setBreakEnd(event.target.value)}
+                  value={startTime}
+                  className="mt-1.5"
+                  onChange={(event) => setStartTime(event.target.value)}
                 />
               </div>
-            </div>
 
-            <Button className="w-full gap-2" onClick={createSchedule}>
-              <Sparkles className="h-4 w-4" />
-              Generate Timetable
-            </Button>
-          </div>
-        </Card> : null}
+              <div>
+                <Label htmlFor="end-time">End Time</Label>
+                <Input
+                  id="end-time"
+                  type="time"
+                  value={endTime}
+                  className="mt-1.5"
+                  onChange={(event) => setEndTime(event.target.value)}
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="period-duration">Period Duration (minutes)</Label>
+                <Input
+                  id="period-duration"
+                  type="number"
+                  min={30}
+                  max={180}
+                  value={periodDuration}
+                  className="mt-1.5"
+                  onChange={(event) => setPeriodDuration(Number(event.target.value || 60))}
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="break-start">Break Time</Label>
+                <div className="mt-1.5 flex gap-2">
+                  <Input
+                    id="break-start"
+                    type="time"
+                    value={breakStart}
+                    onChange={(event) => setBreakStart(event.target.value)}
+                  />
+                  <Input
+                    type="time"
+                    value={breakEnd}
+                    onChange={(event) => setBreakEnd(event.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Hard Subject Constraints (Weekly)
+                </p>
+                <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+                  {subjectSuggestions.map((subject) => (
+                    <div key={subject} className="rounded-md border border-border p-2">
+                      <p className="mb-1 text-xs font-medium text-foreground">{subject}</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs" htmlFor={`min-${subject}`}>
+                            Min
+                          </Label>
+                          <Input
+                            id={`min-${subject}`}
+                            type="number"
+                            min={0}
+                            value={subjectConstraints[subject]?.min ?? 2}
+                            onChange={(event) => setConstraint(subject, "min", Number(event.target.value || 0))}
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs" htmlFor={`max-${subject}`}>
+                            Max
+                          </Label>
+                          <Input
+                            id={`max-${subject}`}
+                            type="number"
+                            min={0}
+                            value={subjectConstraints[subject]?.max ?? 6}
+                            onChange={(event) => setConstraint(subject, "max", Number(event.target.value || 0))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <Button className="w-full gap-2" onClick={createSchedule}>
+                <Sparkles className="h-4 w-4" />
+                Generate Timetable
+              </Button>
+            </div>
+          </Card>
+        ) : null}
 
         <Card className={cn("overflow-hidden p-6", role === "admin" ? "lg:col-span-3" : "lg:col-span-1")}>
           {showTimetable ? (
@@ -714,12 +1108,19 @@ export default function TimetablePage() {
                     {role === "faculty" ? "Allocated by admin" : `${selectedDepartmentLabel} Department`}
                   </p>
                 </div>
-                {isLocked && (
-                  <span className="flex items-center gap-1 rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold text-accent">
-                    <Lock className="h-3 w-3" />
-                    Confirmed
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {lockedSlotKeys.length > 0 ? (
+                    <span className="rounded-full bg-warning/20 px-3 py-1 text-xs font-semibold text-warning-foreground">
+                      {lockedSlotKeys.length} critical slot(s)
+                    </span>
+                  ) : null}
+                  {isLocked && (
+                    <span className="flex items-center gap-1 rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold text-accent">
+                      <Lock className="h-3 w-3" />
+                      Confirmed
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="overflow-x-auto">
@@ -747,19 +1148,34 @@ export default function TimetablePage() {
                         </td>
                         {activeDays.map((day) => {
                           const slot = timetable[day]?.[period.key]
+                          const isCritical = lockedSet.has(slotKey(day, period.key))
                           return (
                             <td
                               key={`${day}-${period.key}`}
-                              className={cn("border border-border p-2 text-center", slot?.isBreak && "bg-muted/50")}
+                              className={cn(
+                                "border border-border p-2 text-center",
+                                slot?.isBreak && "bg-muted/50",
+                                isCritical && "bg-warning/10",
+                              )}
                             >
                               {slot ? (
                                 slot.isBreak ? (
                                   <span className="text-xs font-medium text-muted-foreground">{slot.subject}</span>
                                 ) : (
-                                  <div className="group relative rounded-lg bg-primary/10 p-2">
+                                  <div className={cn("group relative rounded-lg bg-primary/10 p-2", isCritical && "ring-1 ring-warning")}>
                                     <p className="text-xs font-semibold text-primary">{slot.subject}</p>
                                     <p className="text-xs text-muted-foreground">{slot.faculty}</p>
                                     <p className="text-xs text-muted-foreground">{slot.room}</p>
+                                    {role === "admin" && !isLocked ? (
+                                      <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        className="absolute -left-1 -top-1 hidden h-6 w-6 group-hover:flex"
+                                        onClick={() => toggleCriticalLock(day, period.key)}
+                                      >
+                                        {isCritical ? <Lock className="h-3 w-3" /> : <LockOpen className="h-3 w-3" />}
+                                      </Button>
+                                    ) : null}
                                     {!isLocked && (
                                       <Button
                                         size="icon"
@@ -787,6 +1203,19 @@ export default function TimetablePage() {
                   </tbody>
                 </table>
               </div>
+
+              {conflicts.length > 0 ? (
+                <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 p-3">
+                  <p className="text-sm font-semibold text-destructive">Conflict Engine Findings</p>
+                  <div className="mt-2 space-y-1 text-xs text-destructive">
+                    {conflicts.map((conflict, index) => (
+                      <p key={`${conflict.type}-${conflict.day}-${conflict.periodKey}-${index}`}>
+                        {conflict.type.toUpperCase()} collision on {conflict.day} ({conflict.periodKey}) for {conflict.value}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               {role === "faculty" && isLoadingAllocations ? (
                 <p className="mt-4 text-sm text-muted-foreground">Loading your allocations...</p>
@@ -816,9 +1245,7 @@ export default function TimetablePage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Edit Timetable Slot</DialogTitle>
-            <DialogDescription>
-              Update subject, faculty, and room details for the selected period.
-            </DialogDescription>
+            <DialogDescription>Update subject, faculty, and room details for the selected period.</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">

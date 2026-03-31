@@ -1,0 +1,551 @@
+create extension if not exists pgcrypto;
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'user_role') then
+    create type public.user_role as enum ('student', 'faculty', 'admin');
+  else
+    begin
+      alter type public.user_role add value if not exists 'student';
+    exception
+      when duplicate_object then null;
+    end;
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'leave_status') then
+    create type public.leave_status as enum ('pending', 'approved', 'rejected');
+  end if;
+end $$;
+
+create table if not exists public.departments (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  code text not null unique,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  full_name text,
+  role public.user_role not null default 'student',
+  department_id uuid references public.departments (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.courses (
+  id uuid primary key default gen_random_uuid(),
+  department_id uuid not null references public.departments (id) on delete cascade,
+  code text not null unique,
+  title text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.course_allocations (
+  id uuid primary key default gen_random_uuid(),
+  faculty_id uuid not null references public.profiles (id) on delete cascade,
+  course_id uuid not null references public.courses (id) on delete cascade,
+  semester int not null check (semester between 1 and 8),
+  section text not null default 'A',
+  year int not null check (year >= 2000),
+  assigned_at timestamptz not null default now(),
+  unique (faculty_id, course_id, semester, year)
+);
+
+alter table public.course_allocations
+  add column if not exists section text not null default 'A';
+
+create table if not exists public.timetable_slots (
+  id uuid primary key default gen_random_uuid(),
+  course_allocation_id uuid not null references public.course_allocations (id) on delete cascade,
+  day_of_week int not null check (day_of_week between 1 and 7),
+  start_time time not null,
+  end_time time not null,
+  room text,
+  created_at timestamptz not null default now(),
+  check (start_time < end_time)
+);
+
+create table if not exists public.leave_requests (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  start_date date not null,
+  end_date date not null,
+  reason text,
+  status public.leave_status not null default 'pending',
+  reviewer_id uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now(),
+  check (start_date <= end_date)
+);
+
+create table if not exists public.feedback_submissions (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references public.profiles (id) on delete cascade,
+  faculty_id uuid not null references public.profiles (id) on delete cascade,
+  department_id uuid not null references public.departments (id) on delete cascade,
+  semester int not null check (semester between 1 and 8),
+  section text not null,
+  rating int not null check (rating between 1 and 5),
+  comment text not null,
+  created_at timestamptz not null default now()
+);
+
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  begin
+    insert into public.profiles (id, full_name, role)
+    values (
+      new.id,
+      coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1)),
+      'student'
+    )
+    on conflict (id) do update
+    set full_name = coalesce(excluded.full_name, public.profiles.full_name);
+  exception
+    when others then
+      raise warning 'handle_new_user failed for user %: %', new.id, sqlerrm;
+  end;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.is_admin(user_id uuid)
+returns boolean
+language sql
+stable
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = user_id and p.role = 'admin'
+  );
+$$;
+
+create or replace function public.is_staff(user_id uuid)
+returns boolean
+language sql
+stable
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = user_id and p.role in ('admin', 'faculty')
+  );
+$$;
+
+drop trigger if exists set_profiles_updated_at on public.profiles;
+create trigger set_profiles_updated_at
+  before update on public.profiles
+  for each row execute procedure public.set_updated_at();
+
+grant usage on schema public to supabase_auth_admin;
+grant select, insert, update on public.profiles to supabase_auth_admin;
+
+alter table public.profiles enable row level security;
+alter table public.departments enable row level security;
+alter table public.courses enable row level security;
+alter table public.course_allocations enable row level security;
+alter table public.timetable_slots enable row level security;
+alter table public.leave_requests enable row level security;
+alter table public.feedback_submissions enable row level security;
+
+drop policy if exists "Users can view own profile" on public.profiles;
+create policy "Users can view own profile"
+  on public.profiles
+  for select
+  using (auth.uid() = id);
+
+drop policy if exists "Users can update own profile" on public.profiles;
+create policy "Users can update own profile"
+  on public.profiles
+  for update
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
+
+drop policy if exists "Admins can view all profiles" on public.profiles;
+create policy "Admins can view all profiles"
+  on public.profiles
+  for select
+  using (public.is_admin(auth.uid()));
+
+drop policy if exists "Admins can manage profiles" on public.profiles;
+create policy "Admins can manage profiles"
+  on public.profiles
+  for all
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Auth admin can insert profiles" on public.profiles;
+create policy "Auth admin can insert profiles"
+  on public.profiles
+  for insert
+  to supabase_auth_admin
+  with check (true);
+
+drop policy if exists "Auth admin can update profiles" on public.profiles;
+create policy "Auth admin can update profiles"
+  on public.profiles
+  for update
+  to supabase_auth_admin
+  using (true)
+  with check (true);
+
+drop policy if exists "Authenticated can view departments" on public.departments;
+create policy "Authenticated can view departments"
+  on public.departments
+  for select
+  using (auth.uid() is not null);
+
+drop policy if exists "Admins can manage departments" on public.departments;
+create policy "Admins can manage departments"
+  on public.departments
+  for all
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Authenticated can view courses" on public.courses;
+create policy "Authenticated can view courses"
+  on public.courses
+  for select
+  using (auth.uid() is not null);
+
+drop policy if exists "Admins can manage courses" on public.courses;
+create policy "Admins can manage courses"
+  on public.courses
+  for all
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Users can view own allocations" on public.course_allocations;
+create policy "Users can view own allocations"
+  on public.course_allocations
+  for select
+  using (faculty_id = auth.uid() or public.is_admin(auth.uid()));
+
+drop policy if exists "Admins can manage allocations" on public.course_allocations;
+create policy "Admins can manage allocations"
+  on public.course_allocations
+  for all
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Users can view timetable" on public.timetable_slots;
+create policy "Users can view timetable"
+  on public.timetable_slots
+  for select
+  using (auth.uid() is not null);
+
+drop policy if exists "Admins can manage timetable" on public.timetable_slots;
+create policy "Admins can manage timetable"
+  on public.timetable_slots
+  for all
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Users can view own leaves" on public.leave_requests;
+create policy "Users can view own leaves"
+  on public.leave_requests
+  for select
+  using (user_id = auth.uid() or public.is_admin(auth.uid()));
+
+drop policy if exists "Users can create own leaves" on public.leave_requests;
+create policy "Users can create own leaves"
+  on public.leave_requests
+  for insert
+  with check (user_id = auth.uid());
+
+drop policy if exists "Users can update pending own leaves" on public.leave_requests;
+create policy "Users can update pending own leaves"
+  on public.leave_requests
+  for update
+  using (user_id = auth.uid() and status = 'pending')
+  with check (user_id = auth.uid());
+
+drop policy if exists "Admins can review leaves" on public.leave_requests;
+create policy "Admins can review leaves"
+  on public.leave_requests
+  for update
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+drop policy if exists "Students can insert own feedback" on public.feedback_submissions;
+create policy "Students can insert own feedback"
+  on public.feedback_submissions
+  for insert
+  with check (student_id = auth.uid());
+
+drop policy if exists "Students can view own feedback" on public.feedback_submissions;
+create policy "Students can view own feedback"
+  on public.feedback_submissions
+  for select
+  using (student_id = auth.uid());
+
+drop policy if exists "Staff can view feedback" on public.feedback_submissions;
+create policy "Staff can view feedback"
+  on public.feedback_submissions
+  for select
+  using (public.is_staff(auth.uid()));
+
+-- Demo seed data (safe to re-run)
+insert into public.departments (name, code)
+values
+  ('Computer Science', 'CSE'),
+  ('Electronics and Communication', 'ECE'),
+  ('Mechanical Engineering', 'MECH')
+on conflict (code) do update set name = excluded.name;
+
+insert into public.courses (department_id, code, title)
+select d.id, v.code, v.title
+from (
+  values
+    ('CSE', 'CS301', 'Database Management Systems'),
+    ('CSE', 'CS302', 'Operating Systems'),
+    ('ECE', 'EC205', 'Digital Signal Processing'),
+    ('MECH', 'ME210', 'Thermodynamics')
+) as v(dept_code, code, title)
+join public.departments d on d.code = v.dept_code
+on conflict (code) do update
+set
+  department_id = excluded.department_id,
+  title = excluded.title;
+
+do $$
+declare
+  demo_admin_id uuid := '7cfe2738-88c1-4ab5-a5a4-b13c3fbeab21';
+  demo_faculty_1_id uuid := '4ab709d0-bf15-4d55-a62f-cf4b5951f8bb';
+  demo_faculty_2_id uuid := '0abf8d06-287b-4269-bdbd-577af67989d5';
+begin
+  if not exists (select 1 from auth.users where id = demo_admin_id) then
+    insert into auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      confirmation_token,
+      email_change,
+      email_change_token_new,
+      recovery_token
+    )
+    values (
+      demo_admin_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      'admin.demo@college.local',
+      crypt('Admin@12345', gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Demo Admin"}'::jsonb,
+      now(),
+      now(),
+      '',
+      '',
+      '',
+      ''
+    );
+
+    insert into auth.identities (
+      id,
+      user_id,
+      identity_data,
+      provider,
+      provider_id,
+      created_at,
+      updated_at,
+      last_sign_in_at
+    )
+    values (
+      gen_random_uuid(),
+      demo_admin_id,
+      jsonb_build_object('sub', demo_admin_id::text, 'email', 'admin.demo@college.local'),
+      'email',
+      'admin.demo@college.local',
+      now(),
+      now(),
+      now()
+    );
+  end if;
+
+  if not exists (select 1 from auth.users where id = demo_faculty_1_id) then
+    insert into auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      confirmation_token,
+      email_change,
+      email_change_token_new,
+      recovery_token
+    )
+    values (
+      demo_faculty_1_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      'faculty1.demo@college.local',
+      crypt('Faculty@12345', gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Prof. Anika Rao"}'::jsonb,
+      now(),
+      now(),
+      '',
+      '',
+      '',
+      ''
+    );
+
+    insert into auth.identities (
+      id,
+      user_id,
+      identity_data,
+      provider,
+      provider_id,
+      created_at,
+      updated_at,
+      last_sign_in_at
+    )
+    values (
+      gen_random_uuid(),
+      demo_faculty_1_id,
+      jsonb_build_object('sub', demo_faculty_1_id::text, 'email', 'faculty1.demo@college.local'),
+      'email',
+      'faculty1.demo@college.local',
+      now(),
+      now(),
+      now()
+    );
+  end if;
+
+  if not exists (select 1 from auth.users where id = demo_faculty_2_id) then
+    insert into auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      confirmation_token,
+      email_change,
+      email_change_token_new,
+      recovery_token
+    )
+    values (
+      demo_faculty_2_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      'faculty2.demo@college.local',
+      crypt('Faculty@12345', gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Prof. Kiran Mehta"}'::jsonb,
+      now(),
+      now(),
+      '',
+      '',
+      '',
+      ''
+    );
+
+    insert into auth.identities (
+      id,
+      user_id,
+      identity_data,
+      provider,
+      provider_id,
+      created_at,
+      updated_at,
+      last_sign_in_at
+    )
+    values (
+      gen_random_uuid(),
+      demo_faculty_2_id,
+      jsonb_build_object('sub', demo_faculty_2_id::text, 'email', 'faculty2.demo@college.local'),
+      'email',
+      'faculty2.demo@college.local',
+      now(),
+      now(),
+      now()
+    );
+  end if;
+
+  insert into public.profiles (id, full_name, role, department_id)
+  values (
+    demo_admin_id,
+    'Demo Admin',
+    'admin',
+    (select id from public.departments where code = 'CSE')
+  )
+  on conflict (id) do update
+  set
+    full_name = excluded.full_name,
+    role = excluded.role,
+    department_id = excluded.department_id;
+
+  insert into public.profiles (id, full_name, role, department_id)
+  values (
+    demo_faculty_1_id,
+    'Prof. Anika Rao',
+    'faculty',
+    (select id from public.departments where code = 'CSE')
+  )
+  on conflict (id) do update
+  set
+    full_name = excluded.full_name,
+    role = excluded.role,
+    department_id = excluded.department_id;
+
+  insert into public.profiles (id, full_name, role, department_id)
+  values (
+    demo_faculty_2_id,
+    'Prof. Kiran Mehta',
+    'faculty',
+    (select id from public.departments where code = 'ECE')
+  )
+  on conflict (id) do update
+  set
+    full_name = excluded.full_name,
+    role = excluded.role,
+    department_id = excluded.department_id;
+end $$;

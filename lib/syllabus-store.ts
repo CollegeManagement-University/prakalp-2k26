@@ -1,4 +1,6 @@
-export type DepartmentCode = 'cs' | 'math' | 'physics' | 'eng'
+import type { DepartmentCode } from "@/lib/departments"
+
+export type { DepartmentCode }
 
 export type SyllabusRecord = {
   id: string

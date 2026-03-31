@@ -122,6 +122,35 @@ export default function SettingsPage() {
                 onChange={(event) => updateField("breakDuration", Number(event.target.value || 60))}
               />
             </div>
+
+            <div className="rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium">Saturday Working Day</p>
+                  <p className="text-sm text-muted-foreground">Enable classes on Saturday</p>
+                </div>
+                <Switch
+                  checked={settings.saturdayWorking}
+                  onCheckedChange={(value) => updateField("saturdayWorking", value)}
+                />
+              </div>
+
+              <div className="mt-3">
+                <Label htmlFor="saturday-mode">Saturday Mode</Label>
+                <select
+                  id="saturday-mode"
+                  className="mt-1.5 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={settings.saturdayMode}
+                  disabled={!settings.saturdayWorking}
+                  onChange={(event) =>
+                    updateField("saturdayMode", event.target.value as AppSettings["saturdayMode"])
+                  }
+                >
+                  <option value="half-day">Half Day</option>
+                  <option value="full-day">Full Day</option>
+                </select>
+              </div>
+            </div>
           </div>
         </Card>
 

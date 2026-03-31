@@ -25,13 +25,22 @@ import { Sparkles, Lock, Pencil, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { defaultAppSettings, loadAppSettings } from "@/lib/app-settings"
 import { findSyllabusRecord, loadSyllabusRecords, type DepartmentCode } from "@/lib/syllabus-store"
+import { departmentLabelByCode, departmentOptions } from "@/lib/departments"
 import { toast } from "sonner"
 import { createClient } from "@/lib/supabase/client"
 
-const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+const allDays = [...weekdays, "Saturday"]
 
 const subjectsByDepartment: Record<string, string[]> = {
   cs: ["Data Structures", "Algorithms", "Database Systems", "Machine Learning", "Networks"],
+  it: ["Web Technologies", "Network Security", "Cloud Fundamentals", "Database Systems", "DevOps"],
+  mech: ["Thermodynamics", "Fluid Mechanics", "Machine Design", "Manufacturing", "Engineering Materials"],
+  civil: ["Structural Analysis", "Surveying", "Geotechnical Engineering", "Construction Planning", "Transportation Engineering"],
+  aiml: ["Machine Learning", "Deep Learning", "Neural Networks", "Computer Vision", "Natural Language Processing"],
+  aids: ["Data Mining", "Statistics for AI", "Machine Learning", "Big Data Analytics", "Data Visualization"],
+  csd: ["Design Thinking", "UI/UX Fundamentals", "Data Structures", "Web Technologies", "Interaction Design"],
   math: ["Linear Algebra", "Statistics", "Discrete Mathematics", "Calculus", "Probability"],
   physics: ["Quantum Physics", "Thermodynamics", "Optics", "Electromagnetism", "Mechanics"],
   eng: ["Engineering Drawing", "Materials Science", "Fluid Mechanics", "Control Systems", "CAD Lab"],
@@ -39,10 +48,18 @@ const subjectsByDepartment: Record<string, string[]> = {
 
 const facultyByDepartment: Record<string, string[]> = {
   cs: ["Dr. Miller", "Prof. Chen", "Dr. Kim", "Dr. Patel", "Prof. Lee"],
+  it: ["Dr. Rhea", "Prof. Sanjay", "Dr. Mehta", "Prof. Kunal", "Dr. Nina"],
+  mech: ["Dr. Arjun", "Prof. Kumar", "Dr. Reddy", "Prof. Vijay", "Dr. Nair"],
+  civil: ["Dr. Iqbal", "Prof. Suresh", "Dr. Priyanka", "Prof. Anil", "Dr. Rekha"],
+  aiml: ["Dr. Kavya", "Prof. Rahul", "Dr. Arav", "Prof. Sneha", "Dr. Arpit"],
+  aids: ["Dr. Latha", "Prof. Nikhil", "Dr. Tejas", "Prof. Bhavna", "Dr. Gopal"],
+  csd: ["Dr. Sonia", "Prof. Vivek", "Dr. Aditi", "Prof. Rohan", "Dr. Ishan"],
   math: ["Dr. Brown", "Prof. Singh", "Dr. Wang", "Prof. Gupta"],
   physics: ["Dr. Sharma", "Prof. Nair", "Dr. Iyer", "Prof. Bose"],
   eng: ["Dr. Rao", "Prof. Menon", "Dr. Thomas", "Prof. Kapoor"],
 }
+
+const nonTeachingSubjects = new Set(["year", "syllabus", "lunch break", "break"])
 
 type Slot = {
   subject: string
@@ -65,6 +82,15 @@ type EditState = {
 }
 
 type AllocationLookup = Record<string, { subject: string }>
+
+function isTeachingSubject(value: string) {
+  const normalized = value.trim().toLowerCase()
+  return Boolean(normalized) && !nonTeachingSubjects.has(normalized)
+}
+
+function activeDaysFromSettings(saturdayWorking: boolean) {
+  return saturdayWorking ? allDays : weekdays
+}
 
 function toMinutes(value: string) {
   const [hours, minutes] = value.split(":").map(Number)
@@ -121,23 +147,30 @@ function buildPeriods(
 
 function generateTimetable(
   periodRows: Period[],
+  activeDays: string[],
+  saturdayMode: "half-day" | "full-day",
   department: string,
   section: string,
   semester: string,
   subjectPool?: string[],
 ): TimetableGrid {
-  const subjects =
-    subjectPool && subjectPool.length > 0
-      ? subjectPool
-      : subjectsByDepartment[department] ?? subjectsByDepartment.cs
+  const sanitizedPool = (subjectPool ?? []).filter(isTeachingSubject)
+  const subjects = sanitizedPool.length > 0 ? sanitizedPool : subjectsByDepartment[department] ?? subjectsByDepartment.cs
   const facultyList = facultyByDepartment[department] ?? facultyByDepartment.cs
+  const subjectFacultyMap = new Map(subjects.map((subject, index) => [subject, facultyList[index % facultyList.length]]))
 
   const table: TimetableGrid = {}
-  let slotIndex = 0
+  const teachingSlots: Array<{ day: string; periodKey: string }> = []
 
-  for (const day of days) {
+  for (const day of activeDays) {
     table[day] = {}
+    const dayRows = periodRows.filter((row) => !row.isBreak)
+    const allowedRowsCount =
+      day === "Saturday" && saturdayMode === "half-day"
+        ? Math.max(1, Math.ceil(dayRows.length / 2))
+        : dayRows.length
 
+    let teachingIndex = 0
     for (const period of periodRows) {
       if (period.isBreak) {
         table[day][period.key] = {
@@ -149,23 +182,63 @@ function generateTimetable(
         continue
       }
 
-      if ((slotIndex + day.length) % 7 === 0) {
-        table[day][period.key] = null
-        slotIndex += 1
+      if (teachingIndex >= allowedRowsCount) {
+        table[day][period.key] = {
+          subject: "NO CLASS",
+          faculty: "",
+          room: "",
+          isBreak: true,
+        }
+        teachingIndex += 1
         continue
       }
 
-      const subject = subjects[(slotIndex + day.length) % subjects.length]
-      const faculty = facultyList[(slotIndex + Number(semester)) % facultyList.length]
-      const room = `${department.toUpperCase()}-${100 + ((slotIndex + section.charCodeAt(0)) % 20)}`
+      teachingSlots.push({ day, periodKey: period.key })
+      table[day][period.key] = null
+      teachingIndex += 1
+    }
+  }
 
-      table[day][period.key] = {
-        subject,
-        faculty,
-        room,
-      }
+  if (teachingSlots.length === 0 || subjects.length === 0) {
+    return table
+  }
 
-      slotIndex += 1
+  let slotIndex = 0
+  for (const subject of subjects) {
+    const slot = teachingSlots[slotIndex]
+    const faculty = subjectFacultyMap.get(subject) ?? facultyList[slotIndex % facultyList.length]
+    const room = `${department.toUpperCase()}-${100 + ((slotIndex + section.charCodeAt(0)) % 20)}`
+    table[slot.day][slot.periodKey] = { subject, faculty, room }
+    slotIndex += 1
+    if (slotIndex >= teachingSlots.length) {
+      return table
+    }
+  }
+
+  for (; slotIndex < teachingSlots.length; slotIndex += 1) {
+    const slot = teachingSlots[slotIndex]
+    const subject = subjects[(slotIndex + Number(semester)) % subjects.length]
+    const faculty = subjectFacultyMap.get(subject) ?? facultyList[(slotIndex + Number(semester)) % facultyList.length]
+    const room = `${department.toUpperCase()}-${100 + ((slotIndex + section.charCodeAt(0)) % 20)}`
+    table[slot.day][slot.periodKey] = { subject, faculty, room }
+  }
+
+  // Leisure is only allowed at lower priority near the end of a day, never first period.
+  for (const day of activeDays) {
+    const dayTeachingKeys = periodRows.filter((row) => !row.isBreak).map((row) => row.key)
+    if (dayTeachingKeys.length < 2) {
+      continue
+    }
+
+    const shouldLeaveLastFree = (day.length + Number(semester) + section.charCodeAt(0)) % 4 === 0
+    if (!shouldLeaveLastFree) {
+      continue
+    }
+
+    const lastKey = dayTeachingKeys[dayTeachingKeys.length - 1]
+    const current = table[day]?.[lastKey]
+    if (current && !current.isBreak) {
+      table[day][lastKey] = null
     }
   }
 
@@ -181,12 +254,14 @@ export default function TimetablePage() {
   const [semester, setSemester] = useState("6")
   const [section, setSection] = useState("A")
   const [department, setDepartment] = useState("cs")
+  const [activeDays, setActiveDays] = useState<string[]>(weekdays)
 
   const [startTime, setStartTime] = useState(defaultAppSettings.startTime)
   const [endTime, setEndTime] = useState(defaultAppSettings.endTime)
   const [breakStart, setBreakStart] = useState(defaultAppSettings.breakStart)
   const [breakEnd, setBreakEnd] = useState(defaultAppSettings.breakEnd)
   const [periodDuration, setPeriodDuration] = useState(defaultAppSettings.periodDuration)
+  const [saturdayMode, setSaturdayMode] = useState<"half-day" | "full-day">(defaultAppSettings.saturdayMode)
 
   const [periodRows, setPeriodRows] = useState<Period[]>([])
   const [timetable, setTimetable] = useState<TimetableGrid>({})
@@ -195,6 +270,31 @@ export default function TimetablePage() {
   const [editSubject, setEditSubject] = useState("")
   const [editFaculty, setEditFaculty] = useState("")
   const [editRoom, setEditRoom] = useState("")
+
+  const subjectSuggestions = useMemo(() => {
+    const syllabus = findSyllabusRecord(
+      loadSyllabusRecords(),
+      semester,
+      section,
+      department as DepartmentCode,
+    )
+    const syllabusSubjects = syllabus?.generatedSubjects ?? syllabus?.keywords ?? []
+    const base = subjectsByDepartment[department] ?? subjectsByDepartment.cs
+    return Array.from(new Set([...syllabusSubjects, ...base])).filter(isTeachingSubject)
+  }, [department, semester, section])
+
+  const facultySuggestions = useMemo(() => {
+    return facultyByDepartment[department] ?? facultyByDepartment.cs
+  }, [department])
+
+  const subjectFacultyMap = useMemo(() => {
+    const map = new Map<string, string>()
+    const faculties = facultyByDepartment[department] ?? facultyByDepartment.cs
+    subjectSuggestions.forEach((subject, index) => {
+      map.set(subject, faculties[index % faculties.length])
+    })
+    return map
+  }, [department, subjectSuggestions])
 
   useEffect(() => {
     const loadPageData = async () => {
@@ -205,6 +305,8 @@ export default function TimetablePage() {
       setBreakStart(settings.breakStart)
       setBreakEnd(settings.breakEnd)
       setPeriodDuration(settings.periodDuration)
+      setSaturdayMode(settings.saturdayMode)
+      setActiveDays(activeDaysFromSettings(settings.saturdayWorking))
 
       const {
         data: { user },
@@ -298,10 +400,15 @@ export default function TimetablePage() {
           3: "Wednesday",
           4: "Thursday",
           5: "Friday",
+          6: "Saturday",
         }
 
+        const usedDays = Array.from(new Set(slots.map((slot) => dayMap[slot.day_of_week]).filter(Boolean) as string[]))
+        const facultyDays = usedDays.length > 0 ? allDays.filter((day) => usedDays.includes(day)) : weekdays
+        setActiveDays(facultyDays)
+
         const facultyTable: TimetableGrid = {}
-        for (const day of days) {
+        for (const day of facultyDays) {
           facultyTable[day] = {}
           for (const row of rows) {
             facultyTable[day][row.key] = null
@@ -332,16 +439,15 @@ export default function TimetablePage() {
   }, [])
 
   const selectedDepartmentLabel = useMemo(() => {
-    const labels: Record<string, string> = {
-      cs: "Computer Science",
-      math: "Mathematics",
-      physics: "Physics",
-      eng: "Engineering",
-    }
-    return labels[department] ?? "Computer Science"
+    return departmentLabelByCode[department as DepartmentCode] ?? "Computer Science"
   }, [department])
 
   const createSchedule = () => {
+    const settings = loadAppSettings()
+    const daysForGeneration = activeDaysFromSettings(settings.saturdayWorking)
+    setActiveDays(daysForGeneration)
+    setSaturdayMode(settings.saturdayMode)
+
     const syllabi = loadSyllabusRecords()
     const matchedSyllabus = findSyllabusRecord(
       syllabi,
@@ -382,11 +488,26 @@ export default function TimetablePage() {
 
     const subjectsFromSyllabus =
       matchedSyllabus.generatedSubjects?.length > 0
-        ? matchedSyllabus.generatedSubjects
-        : matchedSyllabus.keywords
+        ? matchedSyllabus.generatedSubjects.filter(isTeachingSubject)
+        : matchedSyllabus.keywords.filter(isTeachingSubject)
+
+    if (subjectsFromSyllabus.length === 0) {
+      toast.error("Syllabus subjects are invalid. Remove non-teaching entries like Year/Syllabus.")
+      return
+    }
 
     setPeriodRows(rows)
-    setTimetable(generateTimetable(rows, department, section, semester, subjectsFromSyllabus))
+    setTimetable(
+      generateTimetable(
+        rows,
+        daysForGeneration,
+        settings.saturdayMode,
+        department,
+        section,
+        semester,
+        subjectsFromSyllabus,
+      ),
+    )
     setShowTimetable(true)
     toast.success(`Timetable generated using syllabus: ${matchedSyllabus.fileName}`)
   }
@@ -400,7 +521,7 @@ export default function TimetablePage() {
 
     setEditing({ day, periodKey })
     setEditSubject(current?.subject ?? "")
-    setEditFaculty(current?.faculty ?? "")
+    setEditFaculty(current?.faculty ?? subjectFacultyMap.get(current?.subject ?? "") ?? "")
     setEditRoom(current?.room ?? "")
   }
 
@@ -409,8 +530,22 @@ export default function TimetablePage() {
       return
     }
 
-    if (!editSubject.trim()) {
+    const subject = editSubject.trim()
+    if (!subject) {
       toast.error("Subject is required")
+      return
+    }
+
+    if (!isTeachingSubject(subject)) {
+      toast.error("Year and syllabus are not allowed as teaching subjects")
+      return
+    }
+
+    const mappedFaculty = subjectFacultyMap.get(subject)
+    const enteredFaculty = editFaculty.trim()
+
+    if (enteredFaculty && mappedFaculty && enteredFaculty !== mappedFaculty) {
+      toast.error(`Faculty mismatch. ${subject} is allocated to ${mappedFaculty}.`)
       return
     }
 
@@ -419,8 +554,8 @@ export default function TimetablePage() {
       [editing.day]: {
         ...prev[editing.day],
         [editing.periodKey]: {
-          subject: editSubject.trim(),
-          faculty: editFaculty.trim() || "TBD Faculty",
+          subject,
+          faculty: mappedFaculty ?? (enteredFaculty || "TBD Faculty"),
           room: editRoom.trim() || "TBD Room",
         },
       },
@@ -499,10 +634,11 @@ export default function TimetablePage() {
                   <SelectValue placeholder="Select department" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="cs">Computer Science</SelectItem>
-                  <SelectItem value="math">Mathematics</SelectItem>
-                  <SelectItem value="physics">Physics</SelectItem>
-                  <SelectItem value="eng">Engineering</SelectItem>
+                  {departmentOptions.map((item) => (
+                    <SelectItem key={item.code} value={item.code}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -593,7 +729,7 @@ export default function TimetablePage() {
                       <th className="border border-border bg-muted/50 p-3 text-left text-xs font-semibold uppercase text-muted-foreground">
                         Time
                       </th>
-                      {days.map((day) => (
+                      {activeDays.map((day) => (
                         <th
                           key={day}
                           className="border border-border bg-muted/50 p-3 text-center text-xs font-semibold uppercase text-muted-foreground"
@@ -609,7 +745,7 @@ export default function TimetablePage() {
                         <td className="border border-border bg-muted/30 p-3 text-sm font-medium text-muted-foreground">
                           {period.label}
                         </td>
-                        {days.map((day) => {
+                        {activeDays.map((day) => {
                           const slot = timetable[day]?.[period.key]
                           return (
                             <td
@@ -690,6 +826,7 @@ export default function TimetablePage() {
               <Label htmlFor="edit-subject">Subject</Label>
               <Input
                 id="edit-subject"
+                list="subject-suggestions"
                 value={editSubject}
                 onChange={(event) => setEditSubject(event.target.value)}
                 className="mt-1.5"
@@ -699,6 +836,7 @@ export default function TimetablePage() {
               <Label htmlFor="edit-faculty">Faculty</Label>
               <Input
                 id="edit-faculty"
+                list="faculty-suggestions"
                 value={editFaculty}
                 onChange={(event) => setEditFaculty(event.target.value)}
                 className="mt-1.5"
@@ -708,11 +846,27 @@ export default function TimetablePage() {
               <Label htmlFor="edit-room">Room</Label>
               <Input
                 id="edit-room"
+                list="room-suggestions"
                 value={editRoom}
                 onChange={(event) => setEditRoom(event.target.value)}
                 className="mt-1.5"
               />
             </div>
+            <datalist id="subject-suggestions">
+              {subjectSuggestions.map((item) => (
+                <option key={item} value={item} />
+              ))}
+            </datalist>
+            <datalist id="faculty-suggestions">
+              {facultySuggestions.map((item) => (
+                <option key={item} value={item} />
+              ))}
+            </datalist>
+            <datalist id="room-suggestions">
+              {["CS-101", "CS-102", "LAB-1", "LAB-2", "SEM-1", "SEM-2"].map((item) => (
+                <option key={item} value={item} />
+              ))}
+            </datalist>
           </div>
 
           <DialogFooter>

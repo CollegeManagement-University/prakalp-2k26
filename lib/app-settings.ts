@@ -7,6 +7,8 @@ export type AppSettings = {
   breakStart: string
   breakEnd: string
   breakDuration: number
+  saturdayWorking: boolean
+  saturdayMode: 'half-day' | 'full-day'
   institutionName: string
   academicYear: string
   totalSemesters: number
@@ -29,6 +31,8 @@ export const defaultAppSettings: AppSettings = {
   breakStart: '12:00',
   breakEnd: '13:00',
   breakDuration: 60,
+  saturdayWorking: true,
+  saturdayMode: 'half-day',
   institutionName: 'University of Technology',
   academicYear: '2025-2026',
   totalSemesters: 8,

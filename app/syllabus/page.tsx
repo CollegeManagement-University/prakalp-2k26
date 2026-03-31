@@ -19,6 +19,7 @@ import {
   type DepartmentCode,
   type SyllabusRecord,
 } from "@/lib/syllabus-store"
+import { departmentLabelByCode, departmentOptions } from "@/lib/departments"
 import { toast } from "sonner"
 
 interface SuggestedFaculty {
@@ -30,7 +31,7 @@ interface SuggestedFaculty {
   expertise: string[]
 }
 
-const facultySuggestionsByDepartment: Record<DepartmentCode, SuggestedFaculty[]> = {
+const facultySuggestionsByDepartment: Partial<Record<DepartmentCode, SuggestedFaculty[]>> = {
   cs: [
     {
       id: "1",
@@ -89,13 +90,6 @@ const facultySuggestionsByDepartment: Record<DepartmentCode, SuggestedFaculty[]>
   ],
 }
 
-const departmentLabel: Record<DepartmentCode, string> = {
-  cs: "Computer Science",
-  math: "Mathematics",
-  physics: "Physics",
-  eng: "Engineering",
-}
-
 const ignoredTokens = new Set([
   "year",
   "years",
@@ -118,7 +112,7 @@ const ignoredTokens = new Set([
   "v3",
 ])
 
-const semesterSubjectModel: Record<DepartmentCode, Record<string, string[]>> = {
+const semesterSubjectModel: Partial<Record<DepartmentCode, Record<string, string[]>>> = {
   cs: {
     "1": ["Programming Fundamentals", "Discrete Mathematics", "Digital Logic"],
     "2": ["Data Structures", "Object Oriented Programming", "Computer Organization"],
@@ -159,14 +153,68 @@ const semesterSubjectModel: Record<DepartmentCode, Record<string, string[]>> = {
     "7": ["Product Design", "Sustainable Engineering", "Industry 4.0"],
     "8": ["Capstone Design", "Internship", "Professional Practice"],
   },
+  it: {
+    "1": ["Programming Fundamentals", "Digital Logic", "IT Workshop"],
+    "2": ["Data Structures", "Database Systems", "Web Technologies"],
+    "3": ["Computer Networks", "Operating Systems", "Software Engineering"],
+    "4": ["Cloud Computing", "Cyber Security", "DevOps"],
+    "5": ["Full Stack Development", "IoT", "Information Security"],
+    "6": ["Data Engineering", "Site Reliability Engineering", "Project"],
+  },
+  mech: {
+    "1": ["Engineering Mechanics", "Engineering Graphics", "Workshop"],
+    "2": ["Thermodynamics", "Strength of Materials", "Manufacturing Processes"],
+    "3": ["Fluid Mechanics", "Machine Design", "Heat Transfer"],
+    "4": ["Automobile Engineering", "CAD/CAM", "Control Engineering"],
+    "5": ["Robotics", "Finite Element Analysis", "Mechatronics"],
+    "6": ["Industrial Engineering", "Advanced Manufacturing", "Project"],
+  },
+  civil: {
+    "1": ["Engineering Drawing", "Surveying", "Building Materials"],
+    "2": ["Structural Analysis", "Geotechnical Engineering", "Hydraulics"],
+    "3": ["Concrete Technology", "Transportation Engineering", "Environmental Engineering"],
+    "4": ["Design of Structures", "Irrigation Engineering", "Construction Management"],
+    "5": ["Advanced Surveying", "Earthquake Engineering", "Project Planning"],
+    "6": ["Urban Planning", "Bridge Engineering", "Project"],
+  },
+  aiml: {
+    "1": ["Programming Fundamentals", "Linear Algebra", "Probability"],
+    "2": ["Data Structures", "Machine Learning", "Data Visualization"],
+    "3": ["Deep Learning", "Computer Vision", "NLP"],
+    "4": ["MLOps", "Reinforcement Learning", "Generative AI"],
+    "5": ["AI Ethics", "Advanced CV", "Advanced NLP"],
+    "6": ["Edge AI", "AI Product Engineering", "Project"],
+  },
+  aids: {
+    "1": ["Statistics", "Programming Fundamentals", "Database Systems"],
+    "2": ["Data Mining", "Machine Learning", "Big Data"],
+    "3": ["Deep Learning", "Business Analytics", "Data Warehousing"],
+    "4": ["Data Engineering", "AI for Analytics", "Visualization"],
+    "5": ["Predictive Modeling", "Time Series", "MLOps"],
+    "6": ["Decision Intelligence", "Data Governance", "Project"],
+  },
+  csd: {
+    "1": ["Design Thinking", "Programming Fundamentals", "Visual Design"],
+    "2": ["Data Structures", "UI/UX", "Web Technologies"],
+    "3": ["Interaction Design", "Frontend Engineering", "Information Architecture"],
+    "4": ["Product Design", "Human Computer Interaction", "Backend Basics"],
+    "5": ["Design Systems", "Mobile UX", "Creative Coding"],
+    "6": ["Innovation Studio", "Product Engineering", "Project"],
+  },
 }
 
 function extractKeywords(fileName: string, department: DepartmentCode) {
-  const seedByDepartment: Record<DepartmentCode, string[]> = {
+  const seedByDepartment: Partial<Record<DepartmentCode, string[]>> = {
     cs: ["Data Structures", "Algorithms", "Database", "Machine Learning", "Python"],
     math: ["Calculus", "Linear Algebra", "Statistics", "Discrete Math", "Probability"],
     physics: ["Mechanics", "Quantum", "Thermodynamics", "Optics", "Electromagnetism"],
     eng: ["Design", "Control", "Manufacturing", "CAD", "Materials"],
+    it: ["Web", "Networks", "Cloud", "Database", "DevOps"],
+    mech: ["Thermodynamics", "Machine", "CAD", "Manufacturing", "Design"],
+    civil: ["Structural", "Surveying", "Concrete", "Construction", "Geotechnical"],
+    aiml: ["Machine Learning", "Neural", "Vision", "NLP", "AI"],
+    aids: ["Analytics", "Data Mining", "Machine Learning", "Big Data", "Visualization"],
+    csd: ["Design", "Interaction", "UI", "UX", "Frontend"],
   }
 
   const tokens = fileName
@@ -182,7 +230,7 @@ function extractKeywords(fileName: string, department: DepartmentCode) {
     })
     .map((part) => part[0].toUpperCase() + part.slice(1))
 
-  const normalized = Array.from(new Set([...tokens, ...seedByDepartment[department]])).slice(0, 7)
+  const normalized = Array.from(new Set([...tokens, ...(seedByDepartment[department] ?? seedByDepartment.cs ?? [])])).slice(0, 7)
   return normalized
 }
 
@@ -202,7 +250,8 @@ function generateSemesterSubjects(
   department: DepartmentCode,
   semester: string,
 ) {
-  const catalog = semesterSubjectModel[department][semester] ?? semesterSubjectModel[department]["1"]
+  const model = semesterSubjectModel[department] ?? semesterSubjectModel.cs ?? {}
+  const catalog = model[semester] ?? model["1"] ?? []
   const filenameHints = fileName
     .replace(/\.[^.]+$/, "")
     .split(/[_\-]+/)
@@ -287,7 +336,7 @@ export default function SyllabusPage() {
     }
   }, [activeRecord])
 
-  const suggestedFaculty = facultySuggestionsByDepartment[department]
+  const suggestedFaculty = facultySuggestionsByDepartment[department] ?? facultySuggestionsByDepartment.cs ?? []
 
   return (
     <DashboardLayout>
@@ -338,10 +387,11 @@ export default function SyllabusPage() {
               <SelectValue placeholder="Select department" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="cs">Computer Science</SelectItem>
-              <SelectItem value="math">Mathematics</SelectItem>
-              <SelectItem value="physics">Physics</SelectItem>
-              <SelectItem value="eng">Engineering</SelectItem>
+              {departmentOptions.map((item) => (
+                <SelectItem key={item.code} value={item.code}>
+                  {item.label}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -363,7 +413,7 @@ export default function SyllabusPage() {
                 <Upload className="h-8 w-8 text-primary" />
               </div>
               <p className="text-sm font-medium text-foreground">Choose PDF for Semester {semester} Section {section}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{departmentLabel[department]} department</p>
+              <p className="mt-1 text-xs text-muted-foreground">{departmentLabelByCode[department]} department</p>
             </button>
           ) : (
             <div className="space-y-4">
@@ -480,7 +530,7 @@ export default function SyllabusPage() {
                   <tr key={item.id} className="border-b border-border/50">
                     <td className="py-2">{item.semester}</td>
                     <td className="py-2">{item.section}</td>
-                    <td className="py-2">{departmentLabel[item.department]}</td>
+                    <td className="py-2">{departmentLabelByCode[item.department]}</td>
                     <td className="py-2">{item.fileName}</td>
                     <td className="py-2">{new Date(item.uploadedAt).toLocaleString()}</td>
                   </tr>

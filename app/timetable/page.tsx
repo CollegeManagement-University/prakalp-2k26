@@ -38,9 +38,6 @@ import { findSyllabusRecord, loadSyllabusRecords, type DepartmentCode } from "@/
 import { departmentLabelByCode, departmentOptions } from "@/lib/departments"
 import { toast } from "sonner"
 import { createClient } from "@/lib/supabase/client"
-import * as XLSX from "xlsx"
-import { jsPDF } from "jspdf"
-import autoTable from "jspdf-autotable"
 
 const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 const allDays = [...weekdays, "Saturday"]
@@ -410,6 +407,7 @@ export default function TimetablePage() {
   const [lockedSlotKeys, setLockedSlotKeys] = useState<string[]>([])
   const [subjectConstraints, setSubjectConstraints] = useState<SubjectConstraintMap>({})
   const [conflicts, setConflicts] = useState<ConflictItem[]>([])
+  const [syllabusRecords, setSyllabusRecords] = useState<ReturnType<typeof loadSyllabusRecords>>([])
 
   const [editing, setEditing] = useState<EditState | null>(null)
   const [editSubject, setEditSubject] = useState("")
@@ -417,11 +415,11 @@ export default function TimetablePage() {
   const [editRoom, setEditRoom] = useState("")
 
   const subjectSuggestions = useMemo(() => {
-    const syllabus = findSyllabusRecord(loadSyllabusRecords(), semester, section, department as DepartmentCode)
+    const syllabus = findSyllabusRecord(syllabusRecords, semester, section, department as DepartmentCode)
     const syllabusSubjects = syllabus?.generatedSubjects ?? syllabus?.keywords ?? []
     const base = subjectsByDepartment[department] ?? subjectsByDepartment.cs
     return Array.from(new Set([...syllabusSubjects, ...base])).filter(isTeachingSubject)
-  }, [department, semester, section])
+  }, [department, semester, section, syllabusRecords])
 
   const facultySuggestions = useMemo(() => {
     return facultyByDepartment[department] ?? facultyByDepartment.cs
@@ -441,6 +439,10 @@ export default function TimetablePage() {
   }, [department])
 
   const lockedSet = useMemo(() => new Set(lockedSlotKeys), [lockedSlotKeys])
+
+  useEffect(() => {
+    setSyllabusRecords(loadSyllabusRecords())
+  }, [])
 
   useEffect(() => {
     setSubjectConstraints((prev) => sanitizeConstraintMap(subjectSuggestions, prev))
@@ -792,12 +794,13 @@ export default function TimetablePage() {
     return { headers, rows }
   }
 
-  const exportExcel = () => {
+  const exportExcel = async () => {
     if (!showTimetable || periodRows.length === 0) {
       toast.error("Generate timetable first")
       return
     }
 
+    const XLSX = await import("xlsx")
     const { headers, rows } = toExportRows()
     const data = [headers, ...rows]
     const ws = XLSX.utils.aoa_to_sheet(data)
@@ -807,12 +810,14 @@ export default function TimetablePage() {
     toast.success("Excel exported")
   }
 
-  const exportPdf = () => {
+  const exportPdf = async () => {
     if (!showTimetable || periodRows.length === 0) {
       toast.error("Generate timetable first")
       return
     }
 
+    const { jsPDF } = await import("jspdf/dist/jspdf.es.min.js")
+    const autoTable = (await import("jspdf-autotable")).default
     const { headers, rows } = toExportRows()
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" })
     doc.text(`Timetable - Semester ${semester} Section ${section} (${selectedDepartmentLabel})`, 40, 32)

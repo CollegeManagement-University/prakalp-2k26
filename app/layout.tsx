@@ -42,8 +42,8 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           {children}
           <Toaster position="top-right" richColors />
-          <Analytics />
         </ThemeProvider>
+        <Analytics />
       </body>
     </html>
   )
